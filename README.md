@@ -63,8 +63,18 @@ return {
 | `auto_write_context` | `true` | Refresh `ephemeral.json` when switching to an agent buffer. |
 | `terminal.split_direction` | `"vertical"` | `"vertical"` or `"horizontal"`. |
 | `terminal.split_size` | `0.4` | Fraction of the screen the agent split takes. |
-| `agent_instruction_header` | (built-in) | Always appended after the base system prompt (whether that's the active flavor's `system_prompt.md` or `default_system_prompt`). Use this to layer cross-cutting instructions — e.g. "you're running inside Neovim via nvim-agent, here's how the context injection works" — on top of every agent's prompt. |
-| `default_system_prompt` | (built-in) | System prompt seeded into new flavors. |
+| `nvim_agent_preamble` | (built-in) | Layer 1 of the composed system prompt — the runtime contract from nvim-agent (MCP tools, hook contract, coordination rules). Always emitted first; cannot be removed by editing flavor or per-agent prompt files. Override only if you need to customize how nvim-agent introduces itself to the agent. |
+| `default_system_prompt` | (built-in) | Layer 2 fallback. Used when `<active_dir>/system_prompt.md` is missing or empty. Also seeded into newly created flavors as their initial `system_prompt.md`. |
+
+### System prompt composition
+
+Every nvim-agent session's system prompt is built from three layers, joined by blank lines. Empty layers are dropped:
+
+1. **`nvim_agent_preamble`** (config option above) — the plugin's runtime contract. Tells the agent about MCP tools, the UserPromptSubmit hook, env vars, and multi-agent coordination. Always present so editing your flavor can't remove it.
+2. **`<active_dir>/system_prompt.md`** — the user-editable broad-behavior prompt (the "flavor prompt"). Defaults to `default_system_prompt` when empty/missing. Edit with `:NvimAgent edit prompt`.
+3. **`<active_dir>/agent_prompt.md`** — an optional per-agent persona addendum. Use this in workspace mode so each agent definition has its own narrow specialization on top of the shared flavor prompt. Edit with `:NvimAgent edit agent`. Omitted entirely when missing.
+
+Workspace mode persists both `system_prompt.md` and `agent_prompt.md` in each agent's def dir, so the per-agent layer is checked into git alongside the rest of the agent definition.
 
 ### Statusline component
 

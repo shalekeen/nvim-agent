@@ -19,12 +19,15 @@ M.defaults = {
 		split_direction = "vertical",
 		split_size = 0.4,
 	},
-	-- Operational doc appended to the per-session system prompt so the agent
-	-- knows about the runtime contract (env vars, MCP tools, hook injection,
-	-- multi-agent coordination). Lives here rather than in ~/.claude/CLAUDE.md
-	-- so it ONLY reaches agents launched by nvim-agent — never the user's
-	-- regular standalone claude sessions.
-	agent_instruction_header = [[
+	-- Layer 1 of the composed system prompt: the runtime contract from
+	-- nvim-agent itself (env vars, MCP tool catalogue, hook injection
+	-- semantics, multi-agent coordination). Always emitted first so it
+	-- can't be deleted by editing flavor or per-agent prompt files; lives
+	-- here rather than in ~/.claude/CLAUDE.md so it ONLY reaches agents
+	-- launched by nvim-agent — never the user's regular standalone claude
+	-- sessions. See lua/nvim-agent/context/init.lua:compose_system_prompt
+	-- for the full layer ordering.
+	nvim_agent_preamble = [[
 You are working inside Neovim via the nvim-agent plugin.
 
 Context is split across three directories:

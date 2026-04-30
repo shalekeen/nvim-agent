@@ -1821,6 +1821,47 @@ function M.view_system_prompt(active_dir)
 	})
 end
 
+-- Agent prompt: optional per-agent addendum appended after the system prompt.
+-- Created on first edit; absent files are silently omitted from the composed prompt.
+function M.edit_agent_prompt(active_dir)
+	active_dir = active_dir or current_active_dir()
+	if not active_dir then
+		vim.notify("nvim-agent: no active session", vim.log.levels.WARN)
+		return
+	end
+	local path = active_dir .. "/agent_prompt.md"
+	-- Seed an empty file on first edit so the user has somewhere to write.
+	if vim.fn.filereadable(path) ~= 1 then
+		local f = io.open(path, "w")
+		if f then
+			f:write("")
+			f:close()
+		end
+	end
+	vim.cmd("edit " .. vim.fn.fnameescape(path))
+end
+
+function M.view_agent_prompt(active_dir)
+	active_dir = active_dir or current_active_dir()
+	if not active_dir then
+		vim.notify("nvim-agent: no active session", vim.log.levels.WARN)
+		return
+	end
+	local path = active_dir .. "/agent_prompt.md"
+	if vim.fn.filereadable(path) ~= 1 then
+		vim.notify("nvim-agent: no agent_prompt.md for this session", vim.log.levels.INFO)
+		return
+	end
+	local ui = require("nvim-agent.ui")
+	ui.view_file(path, {
+		title = "Agent Prompt (Read-Only)",
+		filetype = "markdown",
+		on_edit = function()
+			M.edit_agent_prompt(active_dir)
+		end,
+	})
+end
+
 -- User notes (session-aware, optional active_dir for multi-session callers)
 function M.edit_user_notes(active_dir)
 	active_dir = active_dir or current_active_dir()

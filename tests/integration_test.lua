@@ -82,14 +82,17 @@ assert_eq("config.setup applies adapter", cfg.adapter, "claude_code")
 assert_eq("config.setup applies auto_open", cfg.auto_open, true)
 assert_eq("config.setup keeps default base_dir", cfg.base_dir, vim.fn.expand("~/.nvim-agent"))
 check(
-	"config.setup keeps default agent_instruction_header",
-	type(cfg.agent_instruction_header) == "string" and cfg.agent_instruction_header:find("nvim%-agent") ~= nil,
-	"header missing or doesn't mention nvim-agent"
+	"config.setup keeps default nvim_agent_preamble",
+	type(cfg.nvim_agent_preamble) == "string" and cfg.nvim_agent_preamble:find("nvim%-agent") ~= nil,
+	"preamble missing or doesn't mention nvim-agent"
 )
 
 -- ---------------------------------------------------------------------------
--- 2. context.get_agent_preamble — verifies agent_instruction_header always
---    appended after the base (the change made for the dead-code fix).
+-- 2. context.compose_system_prompt — verifies the three-layer composition:
+--      1. config.nvim_agent_preamble  (always first)
+--      2. <active_dir>/system_prompt.md (or config.default_system_prompt)
+--      3. <active_dir>/agent_prompt.md  (omitted when empty/missing)
+--    Each non-empty layer is joined by a single blank line.
 -- ---------------------------------------------------------------------------
 
 local context = require("nvim-agent.context")
@@ -97,22 +100,66 @@ local context = require("nvim-agent.context")
 -- Reset to a known config so we can assert on exact substrings.
 config.setup({
 	default_system_prompt = "BASE_PROMPT",
-	agent_instruction_header = "HEADER_TEXT",
+	nvim_agent_preamble = "PREAMBLE",
 })
 
-local p_default = context.get_agent_preamble()
-assert_eq("preamble: no base falls back to default + header", p_default, "BASE_PROMPT\n\nHEADER_TEXT")
+-- No active_dir → preamble + default_system_prompt only (no layer 3 source).
+local p_default = context.compose_system_prompt(nil)
+assert_eq("compose: preamble + default (no active_dir)", p_default, "PREAMBLE\n\nBASE_PROMPT")
 
-local p_custom = context.get_agent_preamble("CUSTOM_BASE")
-assert_eq("preamble: custom base + header", p_custom, "CUSTOM_BASE\n\nHEADER_TEXT")
+-- Active dir exists but contains no files → still falls back to default.
+local tmp_active = vim.fn.tempname()
+vim.fn.mkdir(tmp_active, "p")
+local p_empty_dir = context.compose_system_prompt(tmp_active)
+assert_eq("compose: empty active dir falls back to default", p_empty_dir, "PREAMBLE\n\nBASE_PROMPT")
 
-local p_empty_base = context.get_agent_preamble("")
-assert_eq("preamble: empty base yields header alone", p_empty_base, "HEADER_TEXT")
+-- system_prompt.md present → its content replaces the default for layer 2.
+local sp = io.open(tmp_active .. "/system_prompt.md", "w")
+sp:write("FLAVOR_PROMPT")
+sp:close()
+local p_with_sys = context.compose_system_prompt(tmp_active)
+assert_eq("compose: system_prompt.md overrides default", p_with_sys, "PREAMBLE\n\nFLAVOR_PROMPT")
 
--- With no header configured, just the base.
-config.setup({ default_system_prompt = "ONLY_BASE", agent_instruction_header = "" })
-local p_no_header = context.get_agent_preamble()
-assert_eq("preamble: empty header yields base alone", p_no_header, "ONLY_BASE")
+-- agent_prompt.md present → appended as layer 3.
+local ap = io.open(tmp_active .. "/agent_prompt.md", "w")
+ap:write("AGENT_ADDENDUM")
+ap:close()
+local p_full = context.compose_system_prompt(tmp_active)
+assert_eq(
+	"compose: all three layers, in order",
+	p_full,
+	"PREAMBLE\n\nFLAVOR_PROMPT\n\nAGENT_ADDENDUM"
+)
+
+-- Empty agent_prompt.md → layer 3 is omitted (no dangling blank line).
+io.open(tmp_active .. "/agent_prompt.md", "w"):close()
+local p_empty_agent = context.compose_system_prompt(tmp_active)
+assert_eq(
+	"compose: empty agent_prompt.md is omitted",
+	p_empty_agent,
+	"PREAMBLE\n\nFLAVOR_PROMPT"
+)
+
+-- With no preamble configured → layers 2 + 3 only.
+config.setup({ default_system_prompt = "BASE", nvim_agent_preamble = "" })
+local sp2 = io.open(tmp_active .. "/system_prompt.md", "w")
+sp2:write("FLAVOR")
+sp2:close()
+local ap2 = io.open(tmp_active .. "/agent_prompt.md", "w")
+ap2:write("AGENT")
+ap2:close()
+local p_no_preamble = context.compose_system_prompt(tmp_active)
+assert_eq("compose: empty preamble drops layer 1", p_no_preamble, "FLAVOR\n\nAGENT")
+
+-- Preamble alone (no other layers) → just the preamble, no trailing blanks.
+config.setup({ default_system_prompt = "", nvim_agent_preamble = "PREAMBLE_ONLY" })
+local empty_dir = vim.fn.tempname()
+vim.fn.mkdir(empty_dir, "p")
+local p_only_preamble = context.compose_system_prompt(empty_dir)
+assert_eq("compose: preamble-only (everything else empty)", p_only_preamble, "PREAMBLE_ONLY")
+vim.fn.delete(empty_dir, "rf")
+
+vim.fn.delete(tmp_active, "rf")
 
 -- ---------------------------------------------------------------------------
 -- 3. flavor.list() filters reserved names — covers the agent_templates fix.

@@ -134,18 +134,6 @@ local function hook_script_path()
 	return base_dir .. "/hooks/claude_code_prompt.sh"
 end
 
---- Read the system prompt content from the given active_dir.
-local function read_system_prompt(active_dir)
-	local path = active_dir .. "/system_prompt.md"
-	local f = io.open(path, "r")
-	if not f then
-		return nil
-	end
-	local content = f:read("*a")
-	f:close()
-	return content ~= "" and content or nil
-end
-
 function M:get_cmd(session)
 	if not session then
 		vim.notify("nvim-agent: get_cmd called without a session", vim.log.levels.ERROR)
@@ -154,10 +142,12 @@ function M:get_cmd(session)
 	local active_dir = session.active_dir
 	local debug_log = vim.fn.expand("~/.nvim-agent/claude-mcp-debug.log")
 
-	-- Compose the agent's system prompt: per-session system_prompt.md (if any)
-	-- as the base, with agent_instruction_header always appended on top so the
-	-- agent knows about the nvim-agent runtime contract.
-	local prompt = require("nvim-agent.context").get_agent_preamble(read_system_prompt(active_dir))
+	-- Three-layer composition:
+	--   1. config.nvim_agent_preamble (runtime contract — always present)
+	--   2. system_prompt.md (user-editable flavor base; falls back to default)
+	--   3. agent_prompt.md (user-editable per-agent addendum; optional)
+	-- See lua/nvim-agent/context/init.lua for the full contract.
+	local prompt = require("nvim-agent.context").compose_system_prompt(active_dir)
 
 	-- Determine MCP config: per-session file if session given, else global settings
 	local mcp_config

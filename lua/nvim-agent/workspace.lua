@@ -275,6 +275,7 @@ end
 --- The standard set of context files managed per agent.
 local AGENT_FILES = {
 	"system_prompt.md",
+	"agent_prompt.md",
 	"user_notes.md",
 	"persistent_dirs.json",
 	".flavor_meta.json",

@@ -46,18 +46,58 @@ function M.write_all(active_dir, process_dir)
     end
 end
 
---- Compose a system prompt with the agent_instruction_header appended.
---- @param base_prompt string|nil Override for the base system prompt. When nil,
----                               falls back to config.default_system_prompt.
---- @return string
-function M.get_agent_preamble(base_prompt)
-    local cfg = config.get()
-    local prompt = base_prompt or cfg.default_system_prompt or ""
-    local header = cfg.agent_instruction_header or ""
-    if prompt ~= "" and header ~= "" then
-        return prompt .. "\n\n" .. header
+local function read_file(path)
+    local f = io.open(path, "r")
+    if not f then
+        return nil
     end
-    return prompt ~= "" and prompt or header
+    local content = f:read("*a")
+    f:close()
+    return content
+end
+
+--- Build the three-layer system prompt for a session, in order:
+---
+---   1. config.nvim_agent_preamble  -- the runtime contract from
+---      nvim-agent itself (always present; not affected by user edits to
+---      flavor files).
+---   2. <active_dir>/system_prompt.md    -- the user-editable flavor prompt.
+---      Falls back to config.default_system_prompt when the file is empty
+---      or missing.
+---   3. <active_dir>/agent_prompt.md     -- the user-editable per-agent
+---      addendum. OPTIONAL — omitted entirely when the file is empty or
+---      missing.
+---
+--- Layers are joined by a blank line. Empty layers are dropped so we don't
+--- emit consecutive blank-line gaps.
+---
+--- @param active_dir string|nil  Session active dir; nil → use config defaults
+---                               only (no system_prompt.md/agent_prompt.md read).
+--- @return string
+function M.compose_system_prompt(active_dir)
+    local cfg = config.get()
+    local parts = {}
+
+    if cfg.nvim_agent_preamble and cfg.nvim_agent_preamble ~= "" then
+        table.insert(parts, cfg.nvim_agent_preamble)
+    end
+
+    local sys = active_dir and read_file(active_dir .. "/system_prompt.md")
+    if not sys or sys == "" then
+        sys = cfg.default_system_prompt or ""
+    end
+    if sys ~= "" then
+        table.insert(parts, sys)
+    end
+
+    if active_dir then
+        local agent = read_file(active_dir .. "/agent_prompt.md")
+        if agent and agent ~= "" then
+            table.insert(parts, agent)
+        end
+    end
+
+    return table.concat(parts, "\n\n")
 end
 
 return M

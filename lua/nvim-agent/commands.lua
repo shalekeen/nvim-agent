@@ -81,8 +81,8 @@ local HISTORY_SUBS = { "agent", "workspace", "project" }
 
 local FLAVOR_SUBS = { "create", "load", "save", "savebase", "list", "delete", "rename" }
 local CHECKPOINT_SUBS = { "load", "list", "delete", "sync", "saveto" }
-local EDIT_SUBS = { "prompt", "notes", "dirs" }
-local VIEW_SUBS = { "prompt", "notes", "dirs" }
+local EDIT_SUBS = { "prompt", "agent", "notes", "dirs" }
+local VIEW_SUBS = { "prompt", "agent", "notes", "dirs" }
 local DIR_SUBS = { "add", "remove" }
 
 -- Map: top-level subcommand → list of valid actions for completing args[2].
@@ -295,23 +295,27 @@ local function dispatch(opts)
 		local target = args[2]
 		if target == "prompt" then
 			agent.edit_system_prompt()
+		elseif target == "agent" then
+			agent.edit_agent_prompt()
 		elseif target == "notes" then
 			agent.edit_user_notes()
 		elseif target == "dirs" then
 			agent.edit_persistent_dirs()
 		else
-			vim.notify("nvim-agent: edit what? (prompt|notes|dirs)", vim.log.levels.ERROR)
+			vim.notify("nvim-agent: edit what? (prompt|agent|notes|dirs)", vim.log.levels.ERROR)
 		end
 	elseif sub == "view" then
 		local target = args[2]
 		if target == "prompt" then
 			agent.view_system_prompt()
+		elseif target == "agent" then
+			agent.view_agent_prompt()
 		elseif target == "notes" then
 			agent.view_user_notes()
 		elseif target == "dirs" then
 			agent.view_persistent_dirs()
 		else
-			vim.notify("nvim-agent: view what? (prompt|notes|dirs)", vim.log.levels.ERROR)
+			vim.notify("nvim-agent: view what? (prompt|agent|notes|dirs)", vim.log.levels.ERROR)
 		end
 	elseif sub == "setup" then
 		agent.adapter_setup()
