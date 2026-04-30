@@ -188,6 +188,11 @@ function M.register()
 			desc = "List workspace definitions",
 		},
 		{
+			"<leader>awL",
+			function() agent.workspace_launch_picker() end,
+			desc = "Launch workspace (picker over manifests; bootstraps init/new if empty)",
+		},
+		{
 			"<leader>awr",
 			function() agent.workspace_remove() end,
 			desc = "Remove workspace definition",

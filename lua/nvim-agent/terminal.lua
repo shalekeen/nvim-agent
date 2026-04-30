@@ -265,19 +265,47 @@ function M.toggle(session_id)
 	end
 end
 
+--- Type `text` into the agent terminal and submit it as if the user pressed
+--- Enter.
+---
+--- Why the split-and-defer pattern below:
+--- Claude Code (and other React/Ink-style TUIs) read raw input from a PTY
+--- in raw mode. When we send `text .. "\r"` as a single `nvim_chan_send`
+--- call, all bytes arrive at the PTY in one read. The TUI's input loop
+--- sees a single chunk and treats the trailing `\r` as a newline embedded
+--- in the typed text — not as a discrete "Enter" keypress that submits.
+--- Symptom: the wakeup message appears in the input box but never sends.
+---
+--- Splitting into two writes with a small gap (the deferred `\r`) makes the
+--- TUI register them as two separate input events: first "user typed
+--- <text>", then "user pressed Enter". 100 ms is imperceptible to a human
+--- but reliably long enough for the TUI's input handler to land between
+--- the two.
+---
+--- We also strip any trailing CR/LF from the incoming text so callers can
+--- still pass `"...\r"` (the legacy convention) without us double-firing
+--- Enter.
 function M.send(session_id, text)
 	local sess = get_session(session_id)
 	if not sess then
 		return
 	end
-	if sess.jobid then
-		vim.api.nvim_chan_send(sess.jobid, text)
-	else
+	if not sess.jobid then
 		vim.notify(
 			string.format("nvim-agent: no agent running for session %d", sess.instance_num or 0),
 			vim.log.levels.WARN
 		)
+		return
 	end
+	text = (text or ""):gsub("[\r\n]+$", "")
+	if text ~= "" then
+		vim.api.nvim_chan_send(sess.jobid, text)
+	end
+	vim.defer_fn(function()
+		if sess.jobid then
+			vim.api.nvim_chan_send(sess.jobid, "\r")
+		end
+	end, 100)
 end
 
 function M.is_open(session_id)
@@ -296,17 +324,26 @@ function M.get_bufnr(session_id)
 	return sess.bufnr
 end
 
---- Find a session by agent name and send text to its terminal.
---- Used by the MCP trigger_agent tool via Neovim RPC.
+--- Find a session by agent name and submit text to its terminal as if the
+--- user typed it and pressed Enter. Used by the MCP trigger_agent tool via
+--- Neovim RPC. See M.send for why the Enter is deferred.
 --- @param agent_name string  Session name (e.g. "researcher", "pm")
---- @param text string        Text to inject; include "\n" to auto-submit
+--- @param text string        Text to type. Trailing CR/LF is stripped; Enter is appended automatically.
 --- @return boolean
 function M.send_by_name(agent_name, text)
 	local sess = require("nvim-agent.session").get_by_name(agent_name)
 	if not sess or not sess.jobid then
 		return false
 	end
-	vim.api.nvim_chan_send(sess.jobid, text)
+	text = (text or ""):gsub("[\r\n]+$", "")
+	if text ~= "" then
+		vim.api.nvim_chan_send(sess.jobid, text)
+	end
+	vim.defer_fn(function()
+		if sess.jobid then
+			vim.api.nvim_chan_send(sess.jobid, "\r")
+		end
+	end, 100)
 	return true
 end
 

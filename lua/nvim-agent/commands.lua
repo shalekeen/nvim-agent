@@ -73,7 +73,7 @@ local SUBCOMMANDS = {
 
 local SESSION_SUBS = { "new", "list", "close" }
 local TMUX_SUBS = { "add", "clear", "view" }
-local WORKSPACE_SUBS = { "init", "new", "edit", "save", "list", "remove", "permissions" }
+local WORKSPACE_SUBS = { "init", "new", "launch", "edit", "save", "list", "remove", "permissions" }
 local AGENT_SUBS = { "new", "list", "remove", "save", "set-template" }
 local TEMPLATE_SUBS = { "create", "list", "remove" }
 local ROLE_SUBS = { "edit" }
@@ -149,6 +149,15 @@ local function complete(_, cmd_line, _)
 			if current then
 				return prefix_filter(require("nvim-agent.flavor.checkpoint").list(current), args[3])
 			end
+		end
+	elseif sub == "workspace" then
+		if #args == 3 and args[2] == "launch" then
+			local manifests = require("nvim-agent.workspace").workspace_list(vim.fn.getcwd())
+			local names = {}
+			for _, ws in ipairs(manifests) do
+				table.insert(names, ws.name)
+			end
+			return prefix_filter(names, args[3])
 		end
 	elseif sub == "session" then
 		if #args == 3 and args[2] == "close" then
@@ -356,6 +365,8 @@ local function dispatch(opts)
 			agent.workspace_init()
 		elseif action == "new" then
 			agent.workspace_new()
+		elseif action == "launch" then
+			agent.workspace_launch_picker(args[3])
 		elseif action == "edit" then
 			agent.workspace_edit()
 		elseif action == "save" then
@@ -370,7 +381,7 @@ local function dispatch(opts)
 				vim.notify("nvim-agent: no adapter configured", vim.log.levels.ERROR)
 			end
 		else
-			vim.notify("nvim-agent: workspace what? (init|new|edit|save|list|remove|permissions)", vim.log.levels.ERROR)
+			vim.notify("nvim-agent: workspace what? (init|new|launch [name]|edit|save|list|remove|permissions)", vim.log.levels.ERROR)
 		end
 	elseif sub == "agent" then
 		local action = args[2]

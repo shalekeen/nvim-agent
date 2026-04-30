@@ -213,12 +213,16 @@ A "workspace" in the launcher sense is a manifest at `<cwd>/<def_dir>/workspaces
 Manage them with:
 
 ```
-:NvimAgent workspace new       " interactive: prompts for a name and selects agents
-:NvimAgent workspace list      " browse all workspace manifests in this project
-:NvimAgent workspace edit      " open the current workspace manifest
-:NvimAgent workspace save      " save the live session set as a workspace
-:NvimAgent workspace remove    " delete a workspace manifest
+:NvimAgent workspace new           " interactive: prompts for a name and selects agents
+:NvimAgent workspace launch        " picker over manifests; bootstraps init+new if empty
+:NvimAgent workspace launch <name> " launch a named workspace directly
+:NvimAgent workspace list          " browse all workspace manifests in this project
+:NvimAgent workspace edit          " open the current workspace manifest
+:NvimAgent workspace save          " save the live session set as a workspace
+:NvimAgent workspace remove        " delete a workspace manifest
 ```
+
+The `launch` subcommand is also bound to `<leader>awL`. Use it to spin up a workspace when you already have a standalone agent running (for example, when `auto_open=true` resumed your last standalone flavor and you want to drop into multi-agent mode without closing the current session).
 
 A project can hold any number of workspaces — different `<name>.json` files for different launch sets (e.g. `quick-fix.json` with one agent, `full-team.json` with five).
 

@@ -771,6 +771,90 @@ function M.workspace_list()
 	vim.notify("nvim-agent workspaces:\n" .. table.concat(lines, "\n"), vim.log.levels.INFO)
 end
 
+--- Launch a workspace alongside any sessions already running. With no name,
+--- shows a picker over existing manifests and offers a "create new" fallback;
+--- if the project has no workspace yet, prompts to initialize one first.
+--- @param name string|nil  Optional workspace manifest name to launch directly.
+function M.workspace_launch_picker(name)
+	local ui = require("nvim-agent.ui")
+	local cwd = vim.fn.getcwd()
+	local workspace_mod = require("nvim-agent.workspace")
+
+	-- Direct launch by name: skip the picker entirely.
+	if name and name ~= "" then
+		if not workspace_mod.has_workspace(cwd) then
+			vim.notify("nvim-agent: no workspace initialized in this directory", vim.log.levels.ERROR)
+			return
+		end
+		for _, ws in ipairs(workspace_mod.workspace_list(cwd)) do
+			if ws.name == name then
+				M.workspace_launch(ws, cwd)
+				return
+			end
+		end
+		vim.notify("nvim-agent: workspace '" .. name .. "' not found in this project", vim.log.levels.ERROR)
+		return
+	end
+
+	-- No workspace dir at all: bootstrap by initializing one, then drop into
+	-- the manifest-creation flow.
+	if not workspace_mod.has_workspace(cwd) then
+		ui.input(
+			{ prompt = "", title = "No workspace here yet — initialize one (directory name)", default = ".nvim-workspace" },
+			function(dir_name)
+				if not dir_name or dir_name == "" then
+					return
+				end
+				local dd = workspace_mod.init(cwd, dir_name)
+				vim.notify(
+					string.format(
+						"nvim-agent: workspace initialized.\n  Definitions (git): %s/\n  Runtime (gitignored): %s/",
+						dd,
+						workspace_mod.runtime_dir(cwd)
+					),
+					vim.log.levels.INFO
+				)
+				M.workspace_new()
+			end
+		)
+		return
+	end
+
+	-- Workspace exists but no manifests yet: create the first one.
+	local manifests = workspace_mod.workspace_list(cwd)
+	if #manifests == 0 then
+		vim.notify("nvim-agent: no workspaces defined yet — creating one", vim.log.levels.INFO)
+		M.workspace_new()
+		return
+	end
+
+	-- Show picker over existing manifests + a "create another" option.
+	local options = {}
+	local opt_map = {}
+	for _, ws in ipairs(manifests) do
+		local agent_names = {}
+		for _, a in ipairs(ws.agents or {}) do
+			table.insert(agent_names, a.name)
+		end
+		local label = string.format("%s  [%s]", ws.name, table.concat(agent_names, ", "))
+		table.insert(options, label)
+		opt_map[label] = ws
+	end
+	local create_label = "Create new workspace definition"
+	table.insert(options, create_label)
+
+	ui.select(options, { prompt = "Launch workspace", width = 80 }, function(choice)
+		if not choice then
+			return
+		end
+		if choice == create_label then
+			M.workspace_new()
+			return
+		end
+		M.workspace_launch(opt_map[choice], cwd)
+	end)
+end
+
 --- Edit an existing workspace definition: add/remove agents, change roles.
 --- Loads the workspace JSON, presents the same add/remove UI as workspace_new,
 --- then saves the updated definition.
