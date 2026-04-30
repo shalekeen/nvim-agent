@@ -251,6 +251,13 @@ function M:setup_session_mcp(session)
 end
 
 --- Build the hook shell script content.
+---
+--- Sections are emitted in stable→volatile order so Anthropic's automatic
+--- prefix caching can reuse the longest possible cached prefix between
+--- prompts. Anything that is likely to be byte-identical across consecutive
+--- prompts (role, project doc, flavor metadata) goes first; the most
+--- volatile content (ephemeral editor state, refreshed on every BufEnter)
+--- goes last.
 local function hook_script_content()
 	return [[#!/usr/bin/env bash
 ACTIVE_DIR="${NVIM_AGENT_ACTIVE_DIR}"
@@ -265,12 +272,29 @@ fi
 #   .../sessions/<pid>/<name>/active  →  <name>
 SESSION_NAME=$(basename "$(dirname "$ACTIVE_DIR")")
 
+# --- 0. Static header --------------------------------------------------------
 echo "🚨 REMINDER: Use MCP tools for ALL file operations: read_file to read, edit_buffer to write, search_file to find code. DO NOT use built-in Read/Write/Edit tools."
 echo ""
 echo "=== NEOVIM EDITOR CONTEXT ==="
 
-# Session-specific files (flavor, notes, dirs, role)
-for f in .flavor_meta.json user_notes.md persistent_dirs.json role.md; do
+# --- 1. Identity & project context (most stable) ----------------------------
+# role.md changes only when the user runs :NvimAgent role edit.
+if [ -f "$ACTIVE_DIR/role.md" ]; then
+    echo "--- role.md ---"
+    cat "$ACTIVE_DIR/role.md"
+    echo ""
+fi
+# PROJECT.md is the user's hand-edited project doc; rarely changes.
+if [ -n "$CWD" ] && [ -f "$CWD/PROJECT.md" ]; then
+    echo "--- PROJECT.md ---"
+    cat "$CWD/PROJECT.md"
+    echo ""
+fi
+
+# --- 2. Session preset (stable per session) ---------------------------------
+# .flavor_meta.json: changes only when the user switches flavor/checkpoint.
+# persistent_dirs.json + user_notes.md: hand-edited, occasional changes.
+for f in .flavor_meta.json persistent_dirs.json user_notes.md; do
     if [ -f "$ACTIVE_DIR/$f" ]; then
         echo "--- $f ---"
         cat "$ACTIVE_DIR/$f"
@@ -278,41 +302,34 @@ for f in .flavor_meta.json user_notes.md persistent_dirs.json role.md; do
     fi
 done
 
-# Project context file (PROJECT.md at project root — shared by all agents)
-if [ -n "$CWD" ] && [ -f "$CWD/PROJECT.md" ]; then
-    echo "--- PROJECT.md ---"
-    cat "$CWD/PROJECT.md"
-    echo ""
+# --- 3. Persistent agent state (occasional appends) -------------------------
+# All project-level communication lives in $CWD/.nvim-agent/
+if [ -n "$CWD" ] && [ -n "$SESSION_NAME" ]; then
+    PROJ_DIR="$CWD/.nvim-agent"
+
+    # agent_history.md grows when the agent calls log_work — between calls it's stable.
+    PROJ_HIST="$PROJ_DIR/history/$SESSION_NAME.md"
+    if [ -s "$PROJ_HIST" ]; then
+        echo "--- agent_history.md (last 40 lines) ---"
+        tail -40 "$PROJ_HIST"
+        echo ""
+    fi
 fi
 
-# Ephemeral context (Neovim process state: open buffers, diagnostics, cursor)
-if [ -n "$PROCESS_DIR" ] && [ -f "$PROCESS_DIR/ephemeral.json" ]; then
-    echo "--- ephemeral.json ---"
-    cat "$PROCESS_DIR/ephemeral.json"
-    echo ""
-fi
-
-# Tmux pane captures
+# --- 4. External captures (occasional) --------------------------------------
+# Tmux pane captures only update when the user explicitly captures a pane.
 if [ -n "$PROCESS_DIR" ] && [ -f "$PROCESS_DIR/tmux_captures.json" ]; then
     echo "--- tmux_captures.json ---"
     cat "$PROCESS_DIR/tmux_captures.json"
     echo ""
 fi
 
-# All project-level communication lives in $CWD/.nvim-agent/
+# --- 5. Multi-agent state (volatile when peers are active) ------------------
 if [ -n "$CWD" ] && [ -n "$SESSION_NAME" ]; then
     PROJ_DIR="$CWD/.nvim-agent"
 
-    # Pending messages addressed to this agent
-    MSG_FILE="$PROJ_DIR/messages/$SESSION_NAME.md"
-    if [ -s "$MSG_FILE" ]; then
-        echo "--- messages_for_you.md ---"
-        cat "$MSG_FILE"
-        echo "(Call the read_messages MCP tool after processing to clear these)"
-        echo ""
-    fi
-
-    # Status and role of all peer agents (from .nvim-agent/status/*.json)
+    # Status and role of all peer agents (from .nvim-agent/status/*.json).
+    # Each peer rewrites their status file when they call update_status.
     FOUND_PEER=false
     for status_file in "$PROJ_DIR/status/"*.json; do
         [ -f "$status_file" ] || continue
@@ -335,191 +352,27 @@ if [ -n "$CWD" ] && [ -n "$SESSION_NAME" ]; then
         echo ""
     fi
 
-    # Project-local work history (persistent across nvim restarts)
-    PROJ_HIST="$PROJ_DIR/history/$SESSION_NAME.md"
-    if [ -s "$PROJ_HIST" ]; then
-        echo "--- agent_history.md (last 40 lines) ---"
-        tail -40 "$PROJ_HIST"
+    # Pending messages addressed to this agent — appended by peers between prompts.
+    MSG_FILE="$PROJ_DIR/messages/$SESSION_NAME.md"
+    if [ -s "$MSG_FILE" ]; then
+        echo "--- messages_for_you.md ---"
+        cat "$MSG_FILE"
+        echo "(Call the read_messages MCP tool after processing to clear these)"
         echo ""
     fi
 fi
 
+# --- 6. Editor state (most volatile — kept last to maximize prefix cache) ---
+# ephemeral.json is rewritten on every BufEnter of any agent buffer in this
+# Neovim process, so it's the section most likely to differ between prompts.
+if [ -n "$PROCESS_DIR" ] && [ -f "$PROCESS_DIR/ephemeral.json" ]; then
+    echo "--- ephemeral.json ---"
+    cat "$PROCESS_DIR/ephemeral.json"
+    echo ""
+fi
+
 echo "=== END NEOVIM CONTEXT ==="
 ]]
-end
-
---- Build the CLAUDE.md instruction block content.
-local function claude_md_content()
-	return [[You are working inside Neovim via the nvim-agent plugin.
-
-Context is split across three directories:
-- Session dir  ($NVIM_AGENT_ACTIVE_DIR):  ~/.nvim-agent/sessions/<pid>/<name>/active/
-- Process dir  ($NVIM_AGENT_PROCESS_DIR): ~/.nvim-agent/sessions/<pid>/
-- Project dir  ($NVIM_AGENT_CWD/.nvim-agent/): project-local data (persists across restarts)
-
-A UserPromptSubmit hook automatically injects these context files before each prompt:
-- .flavor_meta.json           -- (session dir) Your active flavor and checkpoint
-- user_notes.md               -- (session dir) User preferences and constraints
-- persistent_dirs.json        -- (session dir) Important code paths to reference
-- role.md                     -- (session dir) Your role and area of expertise (if set)
-- PROJECT.md                  -- (project root) Project vision, architecture, and conventions (if present)
-- ephemeral.json              -- (process dir) Current editor state, SHARED by all agents
-- tmux_captures.json          -- (process dir) Captured tmux pane content, SHARED by all agents
-- messages_for_you.md         -- (project dir) Pending messages from peer agents (if any)
-- peer_agents                 -- (project dir) Role + status of each other active agent (if any)
-- agent_history.md            -- (project dir) Last 40 lines of YOUR work history (if any)
-
-ephemeral.json is refreshed every time the user switches to any agent terminal buffer.
-Project-dir files persist across Neovim restarts.
-
-## ⚠️ CRITICAL: File Operations MUST Use MCP Tools ⚠️
-
-DO NOT use the built-in Read, Write, Edit, or Bash file tools. Use the MCP tools below.
-The MCP tools update the user's Neovim buffers in real-time. Built-in tools bypass the editor.
-
-If you don't see MCP tools in your tool list, notify the user that the MCP server may not be connected.
-
----
-
-## Primary MCP Tools
-
-### 1. read_file — read a file from disk
-Parameters:
-- filepath (required): absolute path
-- start_line (optional): first line to read, 1-indexed
-- end_line (optional): last line to read, 1-indexed inclusive
-
-Examples:
-  read_file(filepath="/path/to/file.py")
-  read_file(filepath="/path/to/file.py", start_line=10, end_line=50)
-
-### 2. edit_buffer — create or edit a file
-Parameters:
-- filepath (required): absolute path (file is created if it doesn't exist)
-- content (required): the new file content as a plain string
-- start_line + end_line (provide both for a range edit, 1-indexed inclusive)
-- replace_entire_file (set true to intentionally replace the whole file)
-- save (optional): save after editing, default true
-- cursor_line (optional): line to position cursor on after editing
-
-You MUST provide either start_line+end_line OR replace_entire_file=true.
-Omitting both is an error — this prevents accidental full-file overwrites.
-
-Examples:
-  -- Range edit (preferred for existing files):
-  edit_buffer(filepath="/path/to/file.py", content="    return 42\n", start_line=15, end_line=15)
-
-  -- Full file replacement (new files or intentional rewrites):
-  edit_buffer(filepath="/path/to/file.py", content="def hello():\n    print('Hello!')\n", replace_entire_file=true)
-
-### 3. search_file — find code in a file
-Parameters:
-- filepath (required): absolute path
-- pattern (required): Lua pattern to search for (similar to regex)
-- context_lines (optional): lines of context around each match, default 0
-
-Returns matches with their line numbers and a suggested range for read_file/edit_buffer.
-
-Examples:
-  search_file(filepath="/path/to/file.py", pattern="def handleFoo")
-  search_file(filepath="/path/to/file.py", pattern="TODO", context_lines=3)
-
-### 4. execute_command — run a Neovim ex command (returns output)
-  execute_command(command="w")
-  execute_command(command="set number")
-
-### 5. list_buffers — list open file buffers
-Returns buffer numbers, paths, modified status, and filetypes.
-
----
-
-## Recommended Workflow for Targeted Edits
-
-1. Find the code location:
-   search_file(filepath="...", pattern="function handleFoo", context_lines=5)
-
-2. Read just that section:
-   read_file(filepath="...", start_line=42, end_line=60)
-
-3. Edit only that section:
-   edit_buffer(filepath="...", content="...", start_line=42, end_line=60)
-
-This avoids reading or rewriting entire large files.
-For new files: edit_buffer(filepath="...", content="...", replace_entire_file=true)
-
----
-
-## Advanced Tools (buffer-number based)
-
-- get_buffer_content(bufnr): read in-memory buffer state (may include unsaved changes)
-- set_buffer_content(bufnr, lines): write to buffer without saving; lines is an array of strings
-- open_buffer(filepath): open a file in the editor window (switches user's view)
-- close_buffer(bufnr, force): close a buffer; force=true discards unsaved changes
-- set_cursor(row, col) / get_cursor(): cursor control
-
----
-
-## Agent Communication Tools
-
-When running in multi-agent mode (multiple sessions in the same Neovim process), peer agents
-are visible in the injected peer_agents context. Use these tools to coordinate.
-
-### send_message(to, content)
-Send a message to a peer agent by name, or "all" to broadcast to every other agent.
-Messages are delivered the next time the recipient submits a prompt.
-
-### read_messages()
-Read and clear your pending mailbox. IMPORTANT: call this after processing injected
-messages_for_you.md so the same messages are not re-injected on the next prompt.
-
-### update_status(current_task)
-Announce what you are currently working on. All peers see this before every prompt.
-
-### list_agent_statuses()
-Get the latest status of every other active agent.
-
-### list_agent_roles()
-Get the role/expertise description of every other active agent. Use this to decide
-whether a task should be delegated to a more appropriate peer.
-
----
-
-## Work History Tools
-
-History is written to disk and persists across Neovim restarts. The hook injects a
-recent excerpt before each prompt so you always have context on past work.
-
-### log_work(summary)
-Append a timestamped entry to your work history file (.nvim-agent/history/<name>.md).
-This file is included in the output of read_cwd_history so all peers can see what you did.
-Call this after completing a meaningful unit of work: implementing a feature, fixing a
-bug, completing a research spike, etc. Be specific — future-you and peer agents will
-rely on these entries to understand what was done and avoid duplicate work.
-
-### read_agent_history()
-Read your complete personal work history for this project.
-
-### read_cwd_history()
-Read the full shared history of all work done in the current directory by any agent.
-Use this when starting a new session to understand what has already been accomplished.
-
-### spawn_agent(name, system_prompt, role, user_notes)
-Dynamically spawn a new workspace agent at runtime. Creates the agent's definition
-directory, writes context files, creates a session, and opens a terminal buffer.
-The new agent appears as a peer immediately and can be communicated with via
-send_message/trigger_agent. Use this when work can be better parallelized by adding
-more agents on the fly.
-
----
-
-## Coordination Guidelines
-
-- When you start a new session, call read_cwd_history() to orient yourself.
-- Before starting a task, call list_agent_roles() and list_agent_statuses() to check
-  whether a peer is better suited for it or is already working on it.
-- After meaningful work, call log_work() with a clear summary.
-- When you receive messages in injected context, call read_messages() to clear them.
-- If a task falls outside your role, use send_message() to delegate it to the right peer.]]
 end
 
 --- Write the hook script to ~/.nvim-agent/hooks/claude_code_prompt.sh
@@ -537,109 +390,6 @@ local function write_hook_script()
 
 	vim.fn.system("chmod +x " .. vim.fn.shellescape(path))
 	return true
-end
-
---- Update ~/.claude/settings.json to add the UserPromptSubmit hook.
---- Path to the global Claude Code settings file. Cached via vim.fn.expand
---- because we touch it from several functions in this module.
-local function claude_settings_path()
-	return vim.fn.expand("~/.claude/settings.json")
-end
-
---- Read-modify-write the Claude settings JSON. Reads the file (or starts with
---- an empty table), passes it to `mutator(settings)` for in-place edits, then
---- writes the result back. Returns true on success, false on I/O failure.
----
---- The mutator may return `false` to skip the write (e.g. when it determined
---- there was nothing to change).
-local function update_claude_settings(mutator)
-	local settings_path = claude_settings_path()
-	vim.fn.mkdir(vim.fn.fnamemodify(settings_path, ":h"), "p")
-
-	local settings = {}
-	local f = io.open(settings_path, "r")
-	if f then
-		local content = f:read("*a")
-		f:close()
-		if content and content ~= "" then
-			local ok, data = pcall(vim.json.decode, content)
-			if ok and type(data) == "table" then
-				settings = data
-			end
-		end
-	end
-
-	local should_write = mutator(settings)
-	if should_write == false then
-		return true
-	end
-
-	local fw = io.open(settings_path, "w")
-	if not fw then
-		vim.notify("nvim-agent: failed to write " .. settings_path, vim.log.levels.ERROR)
-		return false
-	end
-	fw:write(vim.json.encode(settings))
-	fw:close()
-	return true
-end
-
---- Also ensures NVIM_AGENT_ACTIVE_DIR is set in the global MCP entry
---- (defaults to session 1's active dir for backward compat).
-local function write_claude_settings()
-	update_claude_settings(function(settings)
-		if settings.hooks and settings.hooks.UserPromptSubmit then
-			return false -- nothing to add
-		end
-		settings.hooks = settings.hooks or {}
-		settings.hooks.UserPromptSubmit = {
-			{
-				hooks = {
-					{ type = "command", command = hook_script_path() },
-				},
-			},
-		}
-	end)
-end
-
---- Write the nvim-agent block to ~/.claude/CLAUDE.md using markers
---- for idempotent updates.
-local function write_claude_md()
-	local claude_md_path = vim.fn.expand("~/.claude/CLAUDE.md")
-	vim.fn.mkdir(vim.fn.fnamemodify(claude_md_path, ":h"), "p")
-
-	local marker_start = "<!-- nvim-agent:start -->"
-	local marker_end = "<!-- nvim-agent:end -->"
-	local block = marker_start .. "\n" .. claude_md_content() .. "\n" .. marker_end
-
-	-- Read existing content
-	local f = io.open(claude_md_path, "r")
-	local existing = ""
-	if f then
-		existing = f:read("*a")
-		f:close()
-	end
-
-	local new_content
-	if existing:find(marker_start, 1, true) then
-		-- Replace existing nvim-agent block
-		local pattern = vim.pesc(marker_start) .. ".-" .. vim.pesc(marker_end)
-		new_content = existing:gsub(pattern, function()
-			return block
-		end)
-	elseif existing ~= "" then
-		new_content = existing .. "\n\n" .. block
-	else
-		new_content = block
-	end
-
-	local fw = io.open(claude_md_path, "w")
-	if not fw then
-		vim.notify("nvim-agent: failed to write " .. claude_md_path, vim.log.levels.ERROR)
-		return
-	end
-	fw:write(new_content)
-	fw:close()
 end
 
 --- Write <cwd>/.claude/settings.json with broad allow-permissions so Claude Code
@@ -691,73 +441,58 @@ function M:setup_project_permissions(cwd)
 	vim.notify("nvim-agent: project permissions set (" .. settings_path .. ")", vim.log.levels.INFO)
 end
 
---- Setup MCP server configuration in ~/.claude/settings.json.
---- Global entry defaults NVIM_AGENT_ACTIVE_DIR to session 1's active dir.
-local function setup_mcp_server()
-	local nvim_address = vim.v.servername
-	if not nvim_address or nvim_address == "" then
-		vim.notify(
-			"nvim-agent: Could not determine Neovim server address. MCP server will not be configured.",
-			vim.log.levels.WARN
-		)
-		return
-	end
-
-	-- Get the path to the MCP server script (searches runtimepath so it works
-	-- regardless of how the plugin is installed: lazy.nvim, packer, manual, etc.)
-	local mcp_server_path = vim.api.nvim_get_runtime_file("lua/nvim-agent/mcp/server.lua", false)[1]
-	if not mcp_server_path or not vim.loop.fs_stat(mcp_server_path) then
-		vim.notify("nvim-agent: MCP server script not found on runtimepath (lua/nvim-agent/mcp/server.lua)", vim.log.levels.WARN)
-		return
-	end
-
-	-- Default dirs point to the first (main) session of this process.
-	-- Structure: sessions/<pid>/<name>/active/  and  sessions/<pid>/ephemeral.json
-	local session_mod = require("nvim-agent.session")
-	local process_dir = session_mod.get_process_dir()
-	local session1_active = process_dir .. "/main/active"
-
-	-- Always rewrite the global entry. Per-session mcp-settings.json files
-	-- supply the real per-session env, so preserving stale env from the old
-	-- global entry has no effect. This also migrates pre-`nvim -l` users.
-	update_claude_settings(function(settings)
-		settings.mcpServers = settings.mcpServers or {}
-		settings.mcpServers["nvim-agent"] = {
-			command = vim.v.progpath,
-			args = { "-l", mcp_server_path },
-			env = {
-				NVIM_AGENT_NVIM_ADDR = nvim_address,
-				NVIM_AGENT_ACTIVE_DIR = session1_active,
-				NVIM_AGENT_PROCESS_DIR = process_dir,
-			},
-		}
-	end)
-
-	vim.notify(string.format("nvim-agent: MCP server configured (address: %s)", nvim_address), vim.log.levels.INFO)
-end
-
---- Add mcp__nvim-agent__* to permissions.allow in ~/.claude/settings.json
---- so Claude Code never prompts for permission before calling nvim-agent tools.
-local function write_tool_permissions()
-	local permission_entry = "mcp__nvim-agent__*"
-	update_claude_settings(function(settings)
-		settings.permissions = settings.permissions or {}
-		settings.permissions.allow = settings.permissions.allow or {}
-		for _, v in ipairs(settings.permissions.allow) do
-			if v == permission_entry then
-				return false -- already present
+--- Strip legacy ~/.claude/CLAUDE.md block + global mcpServers entry written
+--- by older versions of nvim-agent. Idempotent. We deliberately leave the
+--- UserPromptSubmit hook entry alone in case the user has other hooks of
+--- their own; the hook script self-gates on $NVIM_AGENT_ACTIVE_DIR.
+local function cleanup_legacy_global_config()
+	local claude_md_path = vim.fn.expand("~/.claude/CLAUDE.md")
+	local f = io.open(claude_md_path, "r")
+	if f then
+		local content = f:read("*a")
+		f:close()
+		local marker_start = "<!-- nvim-agent:start -->"
+		local marker_end = "<!-- nvim-agent:end -->"
+		if content and content:find(marker_start, 1, true) then
+			local pattern = vim.pesc(marker_start) .. ".-" .. vim.pesc(marker_end) .. "\n?"
+			local cleaned = content:gsub(pattern, "")
+			cleaned = cleaned:gsub("\n\n\n+", "\n\n")
+			local fw = io.open(claude_md_path, "w")
+			if fw then
+				fw:write(cleaned)
+				fw:close()
 			end
 		end
-		table.insert(settings.permissions.allow, permission_entry)
-	end)
+	end
+
+	local settings_path = vim.fn.expand("~/.claude/settings.json")
+	local sf = io.open(settings_path, "r")
+	if sf then
+		local raw = sf:read("*a")
+		sf:close()
+		local ok, settings = pcall(vim.json.decode, raw or "")
+		if ok and type(settings) == "table" and settings.mcpServers and settings.mcpServers["nvim-agent"] then
+			settings.mcpServers["nvim-agent"] = nil
+			local sw = io.open(settings_path, "w")
+			if sw then
+				sw:write(vim.json.encode(settings))
+				sw:close()
+			end
+		end
+	end
 end
 
 function M:setup()
+	-- Write the hook script that the per-session mcp-settings.json points at.
 	write_hook_script()
-	write_claude_settings()
-	write_claude_md()
-	setup_mcp_server()
-	write_tool_permissions()
+
+	-- One-time migration: prior versions wrote a marker-delimited block into
+	-- ~/.claude/CLAUDE.md and a global nvim-agent mcpServers entry into
+	-- ~/.claude/settings.json. Both leaked operational instructions to plain
+	-- claude sessions launched outside nvim-agent. We now keep all of that
+	-- per-session via --system-prompt and --mcp-config, so strip any legacy
+	-- copies left over from previous installs.
+	cleanup_legacy_global_config()
 end
 
 function M:on_enter(_)

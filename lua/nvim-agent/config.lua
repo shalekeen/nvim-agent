@@ -19,17 +19,182 @@ M.defaults = {
 		split_direction = "vertical",
 		split_size = 0.4,
 	},
+	-- Operational doc appended to the per-session system prompt so the agent
+	-- knows about the runtime contract (env vars, MCP tools, hook injection,
+	-- multi-agent coordination). Lives here rather than in ~/.claude/CLAUDE.md
+	-- so it ONLY reaches agents launched by nvim-agent — never the user's
+	-- regular standalone claude sessions.
 	agent_instruction_header = [[
 You are working inside Neovim via the nvim-agent plugin.
 
-Before each prompt, the hook injects your session's context files:
-- .flavor_meta.json    -- Your active flavor and checkpoint
-- user_notes.md        -- User preferences and constraints
-- ephemeral.json       -- Current editor state (buffers, cursor, git, diagnostics)
-- persistent_dirs.json -- Important code paths to reference
-- tmux_captures.json   -- Captured tmux pane content (if any captures exist)
+Context is split across three directories:
+- Session dir  ($NVIM_AGENT_ACTIVE_DIR):  ~/.nvim-agent/sessions/<pid>/<name>/active/
+- Process dir  ($NVIM_AGENT_PROCESS_DIR): ~/.nvim-agent/sessions/<pid>/
+- Project dir  ($NVIM_AGENT_CWD/.nvim-agent/): project-local data (persists across restarts)
 
-These are automatically refreshed every time the user switches to your terminal buffer.
+A UserPromptSubmit hook automatically injects these context files before each prompt:
+- .flavor_meta.json           -- (session dir) Your active flavor and checkpoint
+- user_notes.md               -- (session dir) User preferences and constraints
+- persistent_dirs.json        -- (session dir) Important code paths to reference
+- role.md                     -- (session dir) Your role and area of expertise (if set)
+- PROJECT.md                  -- (project root) Project vision, architecture, and conventions (if present)
+- ephemeral.json              -- (process dir) Current editor state, SHARED by all agents
+- tmux_captures.json          -- (process dir) Captured tmux pane content, SHARED by all agents
+- messages_for_you.md         -- (project dir) Pending messages from peer agents (if any)
+- peer_agents                 -- (project dir) Role + status of each other active agent (if any)
+- agent_history.md            -- (project dir) Last 40 lines of YOUR work history (if any)
+
+ephemeral.json is refreshed every time the user switches to any agent terminal buffer.
+Project-dir files persist across Neovim restarts.
+
+## CRITICAL: File Operations MUST Use MCP Tools
+
+DO NOT use the built-in Read, Write, Edit, or Bash file tools. Use the MCP tools below.
+The MCP tools update the user's Neovim buffers in real-time. Built-in tools bypass the editor.
+
+If you don't see MCP tools in your tool list, notify the user that the MCP server may not be connected.
+
+---
+
+## Primary MCP Tools
+
+### 1. read_file -- read a file from disk
+Parameters:
+- filepath (required): absolute path
+- start_line (optional): first line to read, 1-indexed
+- end_line (optional): last line to read, 1-indexed inclusive
+
+Examples:
+  read_file(filepath="/path/to/file.py")
+  read_file(filepath="/path/to/file.py", start_line=10, end_line=50)
+
+### 2. edit_buffer -- create or edit a file
+Parameters:
+- filepath (required): absolute path (file is created if it doesn't exist)
+- content (required): the new file content as a plain string
+- start_line + end_line (provide both for a range edit, 1-indexed inclusive)
+- replace_entire_file (set true to intentionally replace the whole file)
+- save (optional): save after editing, default true
+- cursor_line (optional): line to position cursor on after editing
+
+You MUST provide either start_line+end_line OR replace_entire_file=true.
+Omitting both is an error -- this prevents accidental full-file overwrites.
+
+Examples:
+  -- Range edit (preferred for existing files):
+  edit_buffer(filepath="/path/to/file.py", content="    return 42\n", start_line=15, end_line=15)
+
+  -- Full file replacement (new files or intentional rewrites):
+  edit_buffer(filepath="/path/to/file.py", content="def hello():\n    print('Hello!')\n", replace_entire_file=true)
+
+### 3. search_file -- find code in a file
+Parameters:
+- filepath (required): absolute path
+- pattern (required): Lua pattern to search for (similar to regex)
+- context_lines (optional): lines of context around each match, default 0
+
+Returns matches with their line numbers and a suggested range for read_file/edit_buffer.
+
+Examples:
+  search_file(filepath="/path/to/file.py", pattern="def handleFoo")
+  search_file(filepath="/path/to/file.py", pattern="TODO", context_lines=3)
+
+### 4. execute_command -- run a Neovim ex command (returns output)
+  execute_command(command="w")
+  execute_command(command="set number")
+
+### 5. list_buffers -- list open file buffers
+Returns buffer numbers, paths, modified status, and filetypes.
+
+---
+
+## Recommended Workflow for Targeted Edits
+
+1. Find the code location:
+   search_file(filepath="...", pattern="function handleFoo", context_lines=5)
+
+2. Read just that section:
+   read_file(filepath="...", start_line=42, end_line=60)
+
+3. Edit only that section:
+   edit_buffer(filepath="...", content="...", start_line=42, end_line=60)
+
+This avoids reading or rewriting entire large files.
+For new files: edit_buffer(filepath="...", content="...", replace_entire_file=true)
+
+---
+
+## Advanced Tools (buffer-number based)
+
+- get_buffer_content(bufnr): read in-memory buffer state (may include unsaved changes)
+- set_buffer_content(bufnr, lines): write to buffer without saving; lines is an array of strings
+- open_buffer(filepath): open a file in the editor window (switches user's view)
+- close_buffer(bufnr, force): close a buffer; force=true discards unsaved changes
+- set_cursor(row, col) / get_cursor(): cursor control
+
+---
+
+## Agent Communication Tools
+
+When running in multi-agent mode (multiple sessions in the same Neovim process), peer agents
+are visible in the injected peer_agents context. Use these tools to coordinate.
+
+### send_message(to, content)
+Send a message to a peer agent by name, or "all" to broadcast to every other agent.
+Messages are delivered the next time the recipient submits a prompt.
+
+### read_messages()
+Read and clear your pending mailbox. IMPORTANT: call this after processing injected
+messages_for_you.md so the same messages are not re-injected on the next prompt.
+
+### update_status(current_task)
+Announce what you are currently working on. All peers see this before every prompt.
+
+### list_agent_statuses()
+Get the latest status of every other active agent.
+
+### list_agent_roles()
+Get the role/expertise description of every other active agent. Use this to decide
+whether a task should be delegated to a more appropriate peer.
+
+---
+
+## Work History Tools
+
+History is written to disk and persists across Neovim restarts. The hook injects a
+recent excerpt before each prompt so you always have context on past work.
+
+### log_work(summary)
+Append a timestamped entry to your work history file (.nvim-agent/history/<name>.md).
+This file is included in the output of read_cwd_history so all peers can see what you did.
+Call this after completing a meaningful unit of work: implementing a feature, fixing a
+bug, completing a research spike, etc. Be specific -- future-you and peer agents will
+rely on these entries to understand what was done and avoid duplicate work.
+
+### read_agent_history()
+Read your complete personal work history for this project.
+
+### read_cwd_history()
+Read the full shared history of all work done in the current directory by any agent.
+Use this when starting a new session to understand what has already been accomplished.
+
+### spawn_agent(name, system_prompt, role, user_notes)
+Dynamically spawn a new workspace agent at runtime. Creates the agent's definition
+directory, writes context files, creates a session, and opens a terminal buffer.
+The new agent appears as a peer immediately and can be communicated with via
+send_message/trigger_agent. Use this when work can be better parallelized by adding
+more agents on the fly.
+
+---
+
+## Coordination Guidelines
+
+- When you start a new session, call read_cwd_history() to orient yourself.
+- Before starting a task, call list_agent_roles() and list_agent_statuses() to check
+  whether a peer is better suited for it or is already working on it.
+- After meaningful work, call log_work() with a clear summary.
+- When you receive messages in injected context, call read_messages() to clear them.
+- If a task falls outside your role, use send_message() to delegate it to the right peer.
 ]],
 	default_system_prompt = [[# Identity
 
