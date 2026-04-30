@@ -441,11 +441,15 @@ function M:setup_project_permissions(cwd)
 	vim.notify("nvim-agent: project permissions set (" .. settings_path .. ")", vim.log.levels.INFO)
 end
 
---- Strip legacy ~/.claude/CLAUDE.md block + global mcpServers entry written
---- by older versions of nvim-agent. Idempotent. We deliberately leave the
---- UserPromptSubmit hook entry alone in case the user has other hooks of
---- their own; the hook script self-gates on $NVIM_AGENT_ACTIVE_DIR.
+--- Strip legacy global config written by older versions of nvim-agent:
+---   1. The marker-delimited block in ~/.claude/CLAUDE.md
+---   2. The "nvim-agent" entry in ~/.claude/settings.json's mcpServers
+---   3. UserPromptSubmit hook entries in settings.json that point at our
+---      hook script (the per-session mcp-settings.json supplies its own).
+--- Idempotent — safe to call on every setup. Other users' hooks/MCP entries
+--- are left untouched.
 local function cleanup_legacy_global_config()
+	-- 1. CLAUDE.md marker block.
 	local claude_md_path = vim.fn.expand("~/.claude/CLAUDE.md")
 	local f = io.open(claude_md_path, "r")
 	if f then
@@ -465,19 +469,67 @@ local function cleanup_legacy_global_config()
 		end
 	end
 
+	-- 2 & 3. Global settings.json: drop our mcpServers entry + any hook
+	-- entry that references our hook script path.
 	local settings_path = vim.fn.expand("~/.claude/settings.json")
 	local sf = io.open(settings_path, "r")
-	if sf then
-		local raw = sf:read("*a")
-		sf:close()
-		local ok, settings = pcall(vim.json.decode, raw or "")
-		if ok and type(settings) == "table" and settings.mcpServers and settings.mcpServers["nvim-agent"] then
-			settings.mcpServers["nvim-agent"] = nil
-			local sw = io.open(settings_path, "w")
-			if sw then
-				sw:write(vim.json.encode(settings))
-				sw:close()
+	if not sf then
+		return
+	end
+	local raw = sf:read("*a")
+	sf:close()
+	local ok, settings = pcall(vim.json.decode, raw or "")
+	if not (ok and type(settings) == "table") then
+		return
+	end
+
+	local dirty = false
+	if settings.mcpServers and settings.mcpServers["nvim-agent"] then
+		settings.mcpServers["nvim-agent"] = nil
+		dirty = true
+	end
+
+	local our_hook = hook_script_path()
+	if settings.hooks and type(settings.hooks.UserPromptSubmit) == "table" then
+		local kept_entries = {}
+		for _, entry in ipairs(settings.hooks.UserPromptSubmit) do
+			-- An "entry" is { hooks = [{ type, command }, ...] }. Strip any
+			-- inner hook whose command matches our script; keep the rest.
+			if type(entry) == "table" and type(entry.hooks) == "table" then
+				local kept_inner = {}
+				for _, h in ipairs(entry.hooks) do
+					if not (type(h) == "table" and h.command == our_hook) then
+						table.insert(kept_inner, h)
+					end
+				end
+				if #kept_inner ~= #entry.hooks then
+					dirty = true
+				end
+				if #kept_inner > 0 then
+					entry.hooks = kept_inner
+					table.insert(kept_entries, entry)
+				end
+			else
+				table.insert(kept_entries, entry)
 			end
+		end
+		if #kept_entries == 0 then
+			settings.hooks.UserPromptSubmit = nil
+		else
+			settings.hooks.UserPromptSubmit = kept_entries
+		end
+		-- If there are no hook keys left at all, drop the empty `hooks` table
+		-- itself so we don't leave a stray `"hooks": []` in the JSON.
+		if next(settings.hooks) == nil then
+			settings.hooks = nil
+		end
+	end
+
+	if dirty then
+		local sw = io.open(settings_path, "w")
+		if sw then
+			sw:write(vim.json.encode(settings))
+			sw:close()
 		end
 	end
 end
