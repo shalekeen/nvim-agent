@@ -80,6 +80,53 @@ local function scroll_to_bottom(bufnr, winnr, delay_ms)
 	end, delay_ms or 5000)
 end
 
+--- Spawn the adapter CLI for `sess` inside the given window. Creates the
+--- terminal buffer, sets the buffer name and filetype, pins it in barbar, runs
+--- adapter buffer-keymap setup, and scrolls to bottom. Used by both M.open's
+--- single-session path and M.open_grid's per-cell path.
+local function launch_session_in_window(sess, win, adapter)
+	require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
+
+	if adapter.setup_session_mcp then
+		adapter:setup_session_mcp(sess)
+	end
+
+	sess.bufnr = vim.api.nvim_create_buf(true, false)
+	vim.api.nvim_win_set_buf(win, sess.bufnr)
+	sess.winnr = win
+	vim.api.nvim_set_current_win(win)
+
+	sess.jobid = vim.fn.termopen(adapter:get_cmd(sess), {
+		env = {
+			NVIM_AGENT_ACTIVE_DIR = sess.active_dir,
+			NVIM_AGENT_PROCESS_DIR = sess.process_dir,
+			NVIM_AGENT_CWD = vim.fn.getcwd(),
+			NVIM_AGENT_BASE_DIR = require("nvim-agent.config").get().base_dir,
+		},
+		on_exit = function(_, code, _)
+			vim.schedule(function()
+				if code ~= 0 then
+					vim.notify(
+						string.format("nvim-agent: session '%s' exited with code %d", sess.name, code),
+						vim.log.levels.WARN
+					)
+				end
+				sess.jobid = nil
+			end)
+		end,
+	})
+
+	vim.api.nvim_buf_set_name(sess.bufnr, buf_name(sess))
+	vim.bo[sess.bufnr].filetype = "nvim-agent"
+	pin_agent_buffer(sess.bufnr)
+
+	if adapter.setup_buffer_keymaps then
+		adapter:setup_buffer_keymaps(sess.bufnr)
+	end
+
+	scroll_to_bottom(sess.bufnr, win)
+end
+
 function M.open(session_id)
 	local sess = get_session(session_id)
 	if not sess then
@@ -108,59 +155,13 @@ function M.open(session_id)
 			sess.winnr = create_split()
 			vim.api.nvim_win_set_buf(sess.winnr, sess.bufnr)
 		end
+		-- Refresh context on re-focus too, for consistency with the BufEnter autocmd.
+		require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
 		vim.cmd("startinsert")
 		return
 	end
 
-	-- Setup per-session MCP config before launching
-	if adapter.setup_session_mcp then
-		adapter:setup_session_mcp(sess)
-	end
-
-	local cmd = adapter:get_cmd(sess)
-
-	-- Create new terminal buffer (listed so barbar shows it)
-	sess.winnr = create_split()
-	sess.bufnr = vim.api.nvim_create_buf(true, false)
-	vim.api.nvim_win_set_buf(sess.winnr, sess.bufnr)
-
-	-- Start terminal job with session-specific env
-	sess.jobid = vim.fn.termopen(cmd, {
-		env = {
-			NVIM_AGENT_ACTIVE_DIR = sess.active_dir,
-			NVIM_AGENT_PROCESS_DIR = sess.process_dir,
-			NVIM_AGENT_CWD = vim.fn.getcwd(),
-			NVIM_AGENT_BASE_DIR = require("nvim-agent.config").get().base_dir,
-		},
-		on_exit = function(_, code, _)
-			vim.schedule(function()
-				if code ~= 0 then
-					vim.notify(
-						string.format("nvim-agent: session '%s' exited with code %d", sess.name, code),
-						vim.log.levels.WARN
-					)
-				end
-				sess.jobid = nil
-			end)
-		end,
-	})
-
-	-- Set buffer properties
-	local name = buf_name(sess)
-	vim.api.nvim_buf_set_name(sess.bufnr, name)
-	vim.bo[sess.bufnr].filetype = "nvim-agent"
-
-	-- Pin buffer to the far left in barbar (safe for concurrent agent launches)
-	pin_agent_buffer(sess.bufnr)
-
-	-- Set up adapter-specific buffer keymaps
-	if adapter.setup_buffer_keymaps then
-		adapter:setup_buffer_keymaps(sess.bufnr)
-	end
-
-	-- Scroll to bottom after CLI tool loads
-	scroll_to_bottom(sess.bufnr, sess.winnr)
-
+	launch_session_in_window(sess, create_split(), adapter)
 	vim.cmd("startinsert")
 end
 
@@ -190,10 +191,6 @@ function M.open_grid(session_ids, cols)
 	end
 
 	local rows = math.ceil(#sessions / cols)
-	local total_height = vim.o.lines - 2 -- leave room for statusline/cmdline
-	local total_width = vim.o.columns
-	local row_height = math.floor(total_height / rows)
-	local col_width = math.floor(total_width / cols)
 
 	-- Create a fresh empty tab so the grid doesn't interfere with existing layout
 	vim.cmd("tabnew")
@@ -234,55 +231,7 @@ function M.open_grid(session_ids, cols)
 					vim.api.nvim_win_close(grid_wins[r][c], true)
 				end
 			else
-				local sess = sessions[idx]
-				local win = grid_wins[r][c]
-
-				-- Write context
-				require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
-
-				-- Setup MCP config
-				if adapter.setup_session_mcp then
-					adapter:setup_session_mcp(sess)
-				end
-
-				-- Create terminal buffer and place it in the grid window
-				sess.bufnr = vim.api.nvim_create_buf(true, false)
-				vim.api.nvim_win_set_buf(win, sess.bufnr)
-				sess.winnr = win
-
-				local cmd = adapter:get_cmd(sess)
-				vim.api.nvim_set_current_win(win)
-				sess.jobid = vim.fn.termopen(cmd, {
-					env = {
-						NVIM_AGENT_ACTIVE_DIR = sess.active_dir,
-						NVIM_AGENT_PROCESS_DIR = sess.process_dir,
-						NVIM_AGENT_CWD = vim.fn.getcwd(),
-						NVIM_AGENT_BASE_DIR = require("nvim-agent.config").get().base_dir,
-					},
-					on_exit = function(_, code, _)
-						vim.schedule(function()
-							if code ~= 0 then
-								vim.notify(
-									string.format("nvim-agent: session '%s' exited with code %d", sess.name, code),
-									vim.log.levels.WARN
-								)
-							end
-							sess.jobid = nil
-						end)
-					end,
-				})
-
-				local name = buf_name(sess)
-				vim.api.nvim_buf_set_name(sess.bufnr, name)
-				vim.bo[sess.bufnr].filetype = "nvim-agent"
-				pin_agent_buffer(sess.bufnr)
-
-				if adapter.setup_buffer_keymaps then
-					adapter:setup_buffer_keymaps(sess.bufnr)
-				end
-
-				-- Scroll to bottom after CLI tool loads
-				scroll_to_bottom(sess.bufnr, win)
+				launch_session_in_window(sessions[idx], grid_wins[r][c], adapter)
 			end
 		end
 	end

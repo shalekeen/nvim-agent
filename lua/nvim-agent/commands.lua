@@ -85,6 +85,33 @@ local EDIT_SUBS = { "prompt", "notes", "dirs" }
 local VIEW_SUBS = { "prompt", "notes", "dirs" }
 local DIR_SUBS = { "add", "remove" }
 
+-- Map: top-level subcommand → list of valid actions for completing args[2].
+local SECOND_LEVEL = {
+	flavor = FLAVOR_SUBS,
+	checkpoint = CHECKPOINT_SUBS,
+	edit = EDIT_SUBS,
+	view = VIEW_SUBS,
+	dir = DIR_SUBS,
+	session = SESSION_SUBS,
+	tmux = TMUX_SUBS,
+	workspace = WORKSPACE_SUBS,
+	agent = AGENT_SUBS,
+	template = TEMPLATE_SUBS,
+	role = ROLE_SUBS,
+	history = HISTORY_SUBS,
+}
+
+local function prefix_filter(list, prefix)
+	prefix = "^" .. vim.pesc(prefix or "")
+	local matches = {}
+	for _, s in ipairs(list) do
+		if s:find(prefix) then
+			table.insert(matches, s)
+		end
+	end
+	return matches
+end
+
 local function complete(_, cmd_line, _)
 	local args = parse_args(cmd_line)
 	-- Remove "NvimAgent" from front
@@ -97,201 +124,40 @@ local function complete(_, cmd_line, _)
 	local sub = args[1]
 
 	if #args == 1 then
-		-- Completing first subcommand
-		local matches = {}
-		for _, s in ipairs(SUBCOMMANDS) do
-			if s:find("^" .. sub) then
-				table.insert(matches, s)
-			end
-		end
-		return matches
+		return prefix_filter(SUBCOMMANDS, sub)
 	end
 
+	-- Most subcommands just need second-level action completion.
+	if #args == 2 and SECOND_LEVEL[sub] then
+		return prefix_filter(SECOND_LEVEL[sub], args[2])
+	end
+
+	-- Third-level completions (subcommand + action + value).
 	if sub == "flavor" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(FLAVOR_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
 		local action = args[2]
 		if #args == 3 and (action == "load" or action == "delete" or action == "save" or action == "rename") then
-			local flavors = require("nvim-agent.flavor").list()
-			local matches = {}
-			local prefix = vim.pesc(args[3] or "")
-			for _, f in ipairs(flavors) do
-				if f:find("^" .. prefix) then
-					table.insert(matches, f)
-				end
-			end
-			return matches
+			return prefix_filter(require("nvim-agent.flavor").list(), args[3])
 		end
 		if #args == 4 and action == "rename" then
 			return {}
 		end
-	end
-
-	if sub == "checkpoint" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(CHECKPOINT_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-		if #args == 3 then
-			local action = args[2]
-			if action == "load" or action == "delete" then
-				local sess = require("nvim-agent.session").get_current()
-				local current = sess and require("nvim-agent.flavor").current(sess.active_dir)
-				if current then
-					local cps = require("nvim-agent.flavor.checkpoint").list(current)
-					local matches = {}
-					local prefix = vim.pesc(args[3] or "")
-					for _, cp in ipairs(cps) do
-						if cp:find("^" .. prefix) then
-							table.insert(matches, cp)
-						end
-					end
-					return matches
-				end
+	elseif sub == "checkpoint" then
+		local action = args[2]
+		if #args == 3 and (action == "load" or action == "delete") then
+			local sess = require("nvim-agent.session").get_current()
+			local current = sess and require("nvim-agent.flavor").current(sess.active_dir)
+			if current then
+				return prefix_filter(require("nvim-agent.flavor.checkpoint").list(current), args[3])
 			end
 		end
-	end
-
-	if sub == "edit" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(EDIT_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "view" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(VIEW_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "dir" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(DIR_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "session" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(SESSION_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
+	elseif sub == "session" then
 		if #args == 3 and args[2] == "close" then
 			local sessions = require("nvim-agent.session").list()
-			local matches = {}
-			local prefix = vim.pesc(args[3] or "")
+			local names = {}
 			for _, sess in ipairs(sessions) do
-				if sess.name:find("^" .. prefix) then
-					table.insert(matches, sess.name)
-				end
+				table.insert(names, sess.name)
 			end
-			return matches
-		end
-	end
-
-	if sub == "tmux" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(TMUX_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "workspace" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(WORKSPACE_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "agent" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(AGENT_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "template" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(TEMPLATE_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "role" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(ROLE_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
-		end
-	end
-
-	if sub == "history" then
-		if #args == 2 then
-			local matches = {}
-			for _, s in ipairs(HISTORY_SUBS) do
-				if s:find("^" .. args[2]) then
-					table.insert(matches, s)
-				end
-			end
-			return matches
+			return prefix_filter(names, args[3])
 		end
 	end
 

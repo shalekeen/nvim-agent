@@ -20,103 +20,70 @@ local M = adapter_base.new({})
 --   "no-code"   — cannot read or write code; can only use agent communication tools
 ------------------------------------------------------------------------
 
+-- Permission profiles are built from a small set of named tool groups so that
+-- changes to the MCP tool surface land in one place.
+local TOOL_GROUPS = {
+	read_builtins  = { "Read(*)", "Glob(*)", "Grep(*)" },
+	write_builtins = { "Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)" },
+	mcp_read = {
+		"mcp__nvim-agent__read_file",
+		"mcp__nvim-agent__search_file",
+		"mcp__nvim-agent__list_buffers",
+		"mcp__nvim-agent__get_buffer_content",
+		"mcp__nvim-agent__execute_command",
+	},
+	mcp_coord = {
+		"mcp__nvim-agent__send_message",
+		"mcp__nvim-agent__read_messages",
+		"mcp__nvim-agent__update_status",
+		"mcp__nvim-agent__list_agent_statuses",
+		"mcp__nvim-agent__list_agent_roles",
+		"mcp__nvim-agent__log_work",
+		"mcp__nvim-agent__read_agent_history",
+		"mcp__nvim-agent__read_cwd_history",
+		"mcp__nvim-agent__trigger_agent",
+	},
+}
+
+local function profile(...)
+	local allow = {}
+	for _, group in ipairs({ ... }) do
+		for _, entry in ipairs(group) do
+			table.insert(allow, entry)
+		end
+	end
+	return { allow = allow, deny = {} }
+end
+
 local PERMISSION_PROFILES = {
 	-- Full access: can read, write, execute, and use all MCP tools.
 	-- For: Senior SWEs, Junior SWEs
-	["full"] = {
-		allow = {
-			"Bash(*)",
-			"Read(*)",
-			"Write(*)",
-			"Edit(*)",
-			"Glob(*)",
-			"Grep(*)",
-			"mcp__nvim-agent__*",
-		},
-		deny = {},
-	},
+	["full"] = { allow = {
+		"Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)",
+		"mcp__nvim-agent__*",
+	}, deny = {} },
 
-	-- QA: can read all code, search, run builds/tests, and write test files.
-	-- Cannot use MCP edit tools to modify editor buffers directly.
-	-- For: QA engineers
-	["qa"] = {
-		allow = {
-			"Bash(*)",
-			"Read(*)",
-			"Write(*)",
-			"Edit(*)",
-			"Glob(*)",
-			"Grep(*)",
-			"mcp__nvim-agent__read_file",
-			"mcp__nvim-agent__search_file",
-			"mcp__nvim-agent__list_buffers",
-			"mcp__nvim-agent__get_buffer_content",
-			"mcp__nvim-agent__get_cursor",
-			"mcp__nvim-agent__execute_command",
-			"mcp__nvim-agent__send_message",
-			"mcp__nvim-agent__read_messages",
-			"mcp__nvim-agent__update_status",
-			"mcp__nvim-agent__list_agent_statuses",
-			"mcp__nvim-agent__list_agent_roles",
-			"mcp__nvim-agent__log_work",
-			"mcp__nvim-agent__read_agent_history",
-			"mcp__nvim-agent__read_cwd_history",
-			"mcp__nvim-agent__trigger_agent",
-		},
-		deny = {},
-	},
+	-- QA: full filesystem access via Claude built-ins, plus read-only MCP
+	-- surface and coordination tools. (get_cursor is QA-specific.)
+	["qa"] = profile(
+		TOOL_GROUPS.write_builtins,
+		TOOL_GROUPS.mcp_read,
+		{ "mcp__nvim-agent__get_cursor" },
+		TOOL_GROUPS.mcp_coord
+	),
 
-	-- Oversight: can read docs/specs/output, search the codebase, run read-only
-	-- commands, and communicate with all agents — but cannot write or edit files.
+	-- Oversight: read-only access for stakeholders.
 	-- For: Product Managers, CEOs, stakeholders
-	["oversight"] = {
-		allow = {
-			"Read(*)",
-			"Glob(*)",
-			"Grep(*)",
-			"mcp__nvim-agent__read_file",
-			"mcp__nvim-agent__search_file",
-			"mcp__nvim-agent__list_buffers",
-			"mcp__nvim-agent__get_buffer_content",
-			"mcp__nvim-agent__execute_command",
-			"mcp__nvim-agent__send_message",
-			"mcp__nvim-agent__read_messages",
-			"mcp__nvim-agent__update_status",
-			"mcp__nvim-agent__list_agent_statuses",
-			"mcp__nvim-agent__list_agent_roles",
-			"mcp__nvim-agent__log_work",
-			"mcp__nvim-agent__read_agent_history",
-			"mcp__nvim-agent__read_cwd_history",
-			"mcp__nvim-agent__trigger_agent",
-		},
-		deny = {},
-	},
+	["oversight"] = profile(TOOL_GROUPS.read_builtins, TOOL_GROUPS.mcp_read, TOOL_GROUPS.mcp_coord),
 
-	-- Orchestrator: same as oversight plus spawn_agent for dynamic scaling.
+	-- Orchestrator: oversight + spawn_agent.
 	-- For: RoboResources, resource managers
-	["orchestrator"] = {
-		allow = {
-			"Read(*)",
-			"Glob(*)",
-			"Grep(*)",
-			"mcp__nvim-agent__read_file",
-			"mcp__nvim-agent__search_file",
-			"mcp__nvim-agent__list_buffers",
-			"mcp__nvim-agent__get_buffer_content",
-			"mcp__nvim-agent__execute_command",
-			"mcp__nvim-agent__send_message",
-			"mcp__nvim-agent__read_messages",
-			"mcp__nvim-agent__update_status",
-			"mcp__nvim-agent__list_agent_statuses",
-			"mcp__nvim-agent__list_agent_roles",
-			"mcp__nvim-agent__log_work",
-			"mcp__nvim-agent__read_agent_history",
-			"mcp__nvim-agent__read_cwd_history",
-			"mcp__nvim-agent__trigger_agent",
-			"mcp__nvim-agent__spawn_agent",
-		},
-		deny = {},
-	},
+	["orchestrator"] = profile(
+		TOOL_GROUPS.read_builtins,
+		TOOL_GROUPS.mcp_read,
+		TOOL_GROUPS.mcp_coord,
+		{ "mcp__nvim-agent__spawn_agent" }
+	),
 }
 
 -- Backward compatibility: old profile names map to new ones
@@ -573,16 +540,23 @@ local function write_hook_script()
 end
 
 --- Update ~/.claude/settings.json to add the UserPromptSubmit hook.
---- Also ensures NVIM_AGENT_ACTIVE_DIR is set in the global MCP entry
---- (defaults to session 1's active dir for backward compat).
-local function write_claude_settings()
-	local settings_dir = vim.fn.expand("~/.claude")
-	local settings_path = settings_dir .. "/settings.json"
+--- Path to the global Claude Code settings file. Cached via vim.fn.expand
+--- because we touch it from several functions in this module.
+local function claude_settings_path()
+	return vim.fn.expand("~/.claude/settings.json")
+end
 
-	vim.fn.mkdir(settings_dir, "p")
+--- Read-modify-write the Claude settings JSON. Reads the file (or starts with
+--- an empty table), passes it to `mutator(settings)` for in-place edits, then
+--- writes the result back. Returns true on success, false on I/O failure.
+---
+--- The mutator may return `false` to skip the write (e.g. when it determined
+--- there was nothing to change).
+local function update_claude_settings(mutator)
+	local settings_path = claude_settings_path()
+	vim.fn.mkdir(vim.fn.fnamemodify(settings_path, ":h"), "p")
 
-	-- Read existing settings
-	local existing = {}
+	local settings = {}
 	local f = io.open(settings_path, "r")
 	if f then
 		local content = f:read("*a")
@@ -590,33 +564,42 @@ local function write_claude_settings()
 		if content and content ~= "" then
 			local ok, data = pcall(vim.json.decode, content)
 			if ok and type(data) == "table" then
-				existing = data
+				settings = data
 			end
 		end
 	end
 
-	-- Add hook if missing
-	if not (existing.hooks and existing.hooks.UserPromptSubmit) then
-		existing.hooks = existing.hooks or {}
-		existing.hooks.UserPromptSubmit = {
-			{
-				hooks = {
-					{
-						type = "command",
-						command = hook_script_path(),
-					},
-				},
-			},
-		}
+	local should_write = mutator(settings)
+	if should_write == false then
+		return true
 	end
 
 	local fw = io.open(settings_path, "w")
 	if not fw then
 		vim.notify("nvim-agent: failed to write " .. settings_path, vim.log.levels.ERROR)
-		return
+		return false
 	end
-	fw:write(vim.json.encode(existing))
+	fw:write(vim.json.encode(settings))
 	fw:close()
+	return true
+end
+
+--- Also ensures NVIM_AGENT_ACTIVE_DIR is set in the global MCP entry
+--- (defaults to session 1's active dir for backward compat).
+local function write_claude_settings()
+	update_claude_settings(function(settings)
+		if settings.hooks and settings.hooks.UserPromptSubmit then
+			return false -- nothing to add
+		end
+		settings.hooks = settings.hooks or {}
+		settings.hooks.UserPromptSubmit = {
+			{
+				hooks = {
+					{ type = "command", command = hook_script_path() },
+				},
+			},
+		}
+	end)
 end
 
 --- Write the nvim-agent block to ~/.claude/CLAUDE.md using markers
@@ -711,26 +694,6 @@ end
 --- Setup MCP server configuration in ~/.claude/settings.json.
 --- Global entry defaults NVIM_AGENT_ACTIVE_DIR to session 1's active dir.
 local function setup_mcp_server()
-	local settings_dir = vim.fn.expand("~/.claude")
-	local settings_path = settings_dir .. "/settings.json"
-
-	vim.fn.mkdir(settings_dir, "p")
-
-	-- Read existing settings
-	local existing = {}
-	local f = io.open(settings_path, "r")
-	if f then
-		local content = f:read("*a")
-		f:close()
-		if content and content ~= "" then
-			local ok, data = pcall(vim.json.decode, content)
-			if ok and type(data) == "table" then
-				existing = data
-			end
-		end
-	end
-
-	-- Get Neovim RPC address
 	local nvim_address = vim.v.servername
 	if not nvim_address or nvim_address == "" then
 		vim.notify(
@@ -754,26 +717,12 @@ local function setup_mcp_server()
 	local process_dir = session_mod.get_process_dir()
 	local session1_active = process_dir .. "/main/active"
 
-	-- Check if MCP server already configured
-	if existing.mcpServers and existing.mcpServers["nvim-agent"] then
-		-- Refresh the command/args so users upgrading from the old luajit-based
-		-- entry get migrated to nvim -l automatically.
-		existing.mcpServers["nvim-agent"].command = vim.v.progpath
-		existing.mcpServers["nvim-agent"].args = { "-l", mcp_server_path }
-		-- Update the address in case it changed; ensure both dir vars are set.
-		-- Drop legacy NVIM_LISTEN_ADDRESS so the spawned `nvim -l` doesn't try
-		-- to bind to the parent's socket.
-		existing.mcpServers["nvim-agent"].env = existing.mcpServers["nvim-agent"].env or {}
-		existing.mcpServers["nvim-agent"].env.NVIM_LISTEN_ADDRESS = nil
-		existing.mcpServers["nvim-agent"].env.NVIM_AGENT_NVIM_ADDR = nvim_address
-		existing.mcpServers["nvim-agent"].env.NVIM_AGENT_ACTIVE_DIR = existing.mcpServers["nvim-agent"].env.NVIM_AGENT_ACTIVE_DIR
-			or session1_active
-		existing.mcpServers["nvim-agent"].env.NVIM_AGENT_PROCESS_DIR = existing.mcpServers["nvim-agent"].env.NVIM_AGENT_PROCESS_DIR
-			or process_dir
-	else
-		-- Add new MCP server configuration
-		existing.mcpServers = existing.mcpServers or {}
-		existing.mcpServers["nvim-agent"] = {
+	-- Always rewrite the global entry. Per-session mcp-settings.json files
+	-- supply the real per-session env, so preserving stale env from the old
+	-- global entry has no effect. This also migrates pre-`nvim -l` users.
+	update_claude_settings(function(settings)
+		settings.mcpServers = settings.mcpServers or {}
+		settings.mcpServers["nvim-agent"] = {
 			command = vim.v.progpath,
 			args = { "-l", mcp_server_path },
 			env = {
@@ -782,15 +731,7 @@ local function setup_mcp_server()
 				NVIM_AGENT_PROCESS_DIR = process_dir,
 			},
 		}
-	end
-
-	local fw = io.open(settings_path, "w")
-	if not fw then
-		vim.notify("nvim-agent: failed to write " .. settings_path, vim.log.levels.ERROR)
-		return
-	end
-	fw:write(vim.json.encode(existing))
-	fw:close()
+	end)
 
 	vim.notify(string.format("nvim-agent: MCP server configured (address: %s)", nvim_address), vim.log.levels.INFO)
 end
@@ -798,45 +739,17 @@ end
 --- Add mcp__nvim-agent__* to permissions.allow in ~/.claude/settings.json
 --- so Claude Code never prompts for permission before calling nvim-agent tools.
 local function write_tool_permissions()
-	local settings_dir = vim.fn.expand("~/.claude")
-	local settings_path = settings_dir .. "/settings.json"
-
-	vim.fn.mkdir(settings_dir, "p")
-
-	local existing = {}
-	local f = io.open(settings_path, "r")
-	if f then
-		local content = f:read("*a")
-		f:close()
-		if content and content ~= "" then
-			local ok, data = pcall(vim.json.decode, content)
-			if ok and type(data) == "table" then
-				existing = data
+	local permission_entry = "mcp__nvim-agent__*"
+	update_claude_settings(function(settings)
+		settings.permissions = settings.permissions or {}
+		settings.permissions.allow = settings.permissions.allow or {}
+		for _, v in ipairs(settings.permissions.allow) do
+			if v == permission_entry then
+				return false -- already present
 			end
 		end
-	end
-
-	local permission_entry = "mcp__nvim-agent__*"
-
-	existing.permissions = existing.permissions or {}
-	existing.permissions.allow = existing.permissions.allow or {}
-
-	-- Check if already present
-	for _, v in ipairs(existing.permissions.allow) do
-		if v == permission_entry then
-			return
-		end
-	end
-
-	table.insert(existing.permissions.allow, permission_entry)
-
-	local fw = io.open(settings_path, "w")
-	if not fw then
-		vim.notify("nvim-agent: failed to write " .. settings_path, vim.log.levels.ERROR)
-		return
-	end
-	fw:write(vim.json.encode(existing))
-	fw:close()
+		table.insert(settings.permissions.allow, permission_entry)
+	end)
 end
 
 function M:setup()
@@ -845,23 +758,6 @@ function M:setup()
 	write_claude_md()
 	setup_mcp_server()
 	write_tool_permissions()
-end
-
-function M:get_context_injection_config()
-	return {
-		hooks = {
-			UserPromptSubmit = {
-				{
-					hooks = {
-						{
-							type = "command",
-							command = hook_script_path(),
-						},
-					},
-				},
-			},
-		},
-	}
 end
 
 function M:on_enter(_)

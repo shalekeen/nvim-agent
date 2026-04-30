@@ -30,51 +30,82 @@ function M.send_selection()
 	end)
 end
 
+--- Open four file paths in a read-only 2×2 grid (top-left, top-right,
+--- bottom-left, bottom-right). The grid lives in a fresh tab; cursor lands on
+--- the top-left window.
+local function open_2x2_grid(files)
+	vim.cmd("tabnew")
+	vim.cmd("edit " .. vim.fn.fnameescape(files[1]))
+	vim.cmd("setlocal readonly")
+	vim.cmd("vsplit " .. vim.fn.fnameescape(files[2]))
+	vim.cmd("setlocal readonly")
+	vim.cmd("wincmd h")
+	vim.cmd("split " .. vim.fn.fnameescape(files[3]))
+	vim.cmd("setlocal readonly")
+	vim.cmd("wincmd l")
+	vim.cmd("split " .. vim.fn.fnameescape(files[4]))
+	vim.cmd("setlocal readonly")
+	vim.cmd("wincmd =")
+	vim.cmd("wincmd h")
+	vim.cmd("wincmd k")
+end
+
+--- Common save-target picker: prompts the user to save the active flavor's
+--- context to either base, an existing checkpoint, or a new checkpoint name.
+--- Used by both the "save flavor" and "save checkpoint" keymaps.
+local function save_with_target_picker(prompt_label, active_dir, agent, ui)
+	local current = require("nvim-agent.flavor").current(active_dir)
+	if not current then
+		vim.notify("nvim-agent: no active flavor", vim.log.levels.ERROR)
+		return
+	end
+	local cps = require("nvim-agent.flavor.checkpoint").list(current)
+	local options = { "base" }
+	for _, cp in ipairs(cps) do
+		table.insert(options, cp)
+	end
+	table.insert(options, "Create new checkpoint")
+
+	ui.select(options, { prompt = prompt_label, width = 70 }, function(choice)
+		if choice == "base" then
+			agent.save_to_base(active_dir)
+		elseif choice == "Create new checkpoint" then
+			ui.input({ prompt = "", title = "Create New Checkpoint (Name)" }, function(name)
+				if name and name ~= "" then
+					agent.checkpoint_save_to(name, active_dir)
+				end
+			end)
+		elseif choice then
+			agent.checkpoint_save_to(choice, active_dir)
+		end
+	end)
+end
+
+--- Build the four context-file paths for a given session (active_dir +
+--- process_dir). Returns nil when there is no current session.
+local function context_grid_paths(sess)
+	if not sess or not sess.active_dir then
+		return nil
+	end
+	local active_dir = sess.active_dir
+	local process_dir = sess.process_dir or active_dir
+	return {
+		active_dir .. "/system_prompt.md",
+		active_dir .. "/user_notes.md",
+		active_dir .. "/persistent_dirs.json",
+		process_dir .. "/ephemeral.json",
+	}
+end
+
 function M.view_all_context()
 	local ok, session_mod = pcall(require, "nvim-agent.session")
 	local sess = ok and session_mod.get_current() or nil
-	local active_dir = sess and sess.active_dir
-	local process_dir = sess and sess.process_dir
-	if not active_dir then
+	local files = context_grid_paths(sess)
+	if not files then
 		vim.notify("nvim-agent: no active session", vim.log.levels.WARN)
 		return
 	end
-	local files = {
-		{ path = active_dir .. "/system_prompt.md", title = "System Prompt" },
-		{ path = active_dir .. "/user_notes.md", title = "User Notes" },
-		{ path = active_dir .. "/persistent_dirs.json", title = "Persistent Dirs" },
-		{ path = (process_dir or active_dir) .. "/ephemeral.json", title = "Ephemeral Context" },
-	}
-
-	-- Create a new tab for the context view
-	vim.cmd("tabnew")
-
-	-- Create a 2x2 grid layout
-	-- Top left: system prompt
-	vim.cmd("edit " .. vim.fn.fnameescape(files[1].path))
-	vim.cmd("setlocal readonly")
-
-	-- Top right: user notes
-	vim.cmd("vsplit " .. vim.fn.fnameescape(files[2].path))
-	vim.cmd("setlocal readonly")
-
-	-- Bottom left: persistent dirs
-	vim.cmd("wincmd h")
-	vim.cmd("split " .. vim.fn.fnameescape(files[3].path))
-	vim.cmd("setlocal readonly")
-
-	-- Bottom right: ephemeral context
-	vim.cmd("wincmd l")
-	vim.cmd("split " .. vim.fn.fnameescape(files[4].path))
-	vim.cmd("setlocal readonly")
-
-	-- Balance the windows
-	vim.cmd("wincmd =")
-
-	-- Focus on the top-left window (system prompt)
-	vim.cmd("wincmd h")
-	vim.cmd("wincmd k")
-
+	open_2x2_grid(files)
 	vim.notify("Viewing all context files (read-only)", vim.log.levels.INFO)
 end
 
@@ -570,35 +601,9 @@ function M.register()
 			"<leader>afs",
 			function()
 				agent.pick_session("Save flavor for session", function(sess_fs)
-					local active_dir_fs = sess_fs and sess_fs.active_dir
-					if not active_dir_fs then
-						return
+					if sess_fs and sess_fs.active_dir then
+						save_with_target_picker("Save to", sess_fs.active_dir, agent, ui)
 					end
-					local current = require("nvim-agent.flavor").current(active_dir_fs)
-					if not current then
-						vim.notify("nvim-agent: no active flavor", vim.log.levels.ERROR)
-						return
-					end
-					local cps = require("nvim-agent.flavor.checkpoint").list(current)
-					local options = { "base" }
-					for _, cp in ipairs(cps) do
-						table.insert(options, cp)
-					end
-					table.insert(options, "Create new checkpoint")
-
-					ui.select(options, { prompt = "Save to", width = 70 }, function(choice)
-						if choice == "base" then
-							agent.save_to_base(active_dir_fs)
-						elseif choice == "Create new checkpoint" then
-							ui.input({ prompt = "", title = "Create New Checkpoint (Name)" }, function(name)
-								if name and name ~= "" then
-									agent.checkpoint_save_to(name, active_dir_fs)
-								end
-							end)
-						elseif choice then
-							agent.checkpoint_save_to(choice, active_dir_fs)
-						end
-					end)
 				end)
 			end,
 			desc = "Save Flavor",
@@ -659,30 +664,7 @@ function M.register()
 				local cp = flav.current_checkpoint(active_dir_fv)
 				local cp_label = cp and ("@ " .. cp) or "@ base"
 
-				-- Open all context files for the current session in a 2x2 grid
-				local process_dir_fv = sess_fv and sess_fv.process_dir
-				local files = {
-					{ path = active_dir_fv .. "/system_prompt.md", title = "System Prompt" },
-					{ path = active_dir_fv .. "/user_notes.md", title = "User Notes" },
-					{ path = active_dir_fv .. "/persistent_dirs.json", title = "Persistent Dirs" },
-					{ path = (process_dir_fv or active_dir_fv) .. "/ephemeral.json", title = "Ephemeral" },
-				}
-
-				vim.cmd("tabnew")
-				vim.cmd("edit " .. vim.fn.fnameescape(files[1].path))
-				vim.cmd("setlocal readonly")
-				vim.cmd("vsplit " .. vim.fn.fnameescape(files[2].path))
-				vim.cmd("setlocal readonly")
-				vim.cmd("wincmd h")
-				vim.cmd("split " .. vim.fn.fnameescape(files[3].path))
-				vim.cmd("setlocal readonly")
-				vim.cmd("wincmd l")
-				vim.cmd("split " .. vim.fn.fnameescape(files[4].path))
-				vim.cmd("setlocal readonly")
-				vim.cmd("wincmd =")
-				vim.cmd("wincmd h")
-				vim.cmd("wincmd k")
-
+				open_2x2_grid(context_grid_paths(sess_fv))
 				vim.notify(string.format("Flavor: %s %s (read-only)", current, cp_label), vim.log.levels.INFO)
 			end,
 			desc = "View current flavor context",
@@ -779,35 +761,9 @@ function M.register()
 			"<leader>afCs",
 			function()
 				agent.pick_session("Save checkpoint for session", function(sess_cs)
-					local active_dir_cs = sess_cs and sess_cs.active_dir
-					if not active_dir_cs then
-						return
+					if sess_cs and sess_cs.active_dir then
+						save_with_target_picker("Save to", sess_cs.active_dir, agent, ui)
 					end
-					local current = require("nvim-agent.flavor").current(active_dir_cs)
-					if not current then
-						vim.notify("nvim-agent: no active flavor", vim.log.levels.ERROR)
-						return
-					end
-					local cps = require("nvim-agent.flavor.checkpoint").list(current)
-					local options = { "base" }
-					for _, cp in ipairs(cps) do
-						table.insert(options, cp)
-					end
-					table.insert(options, "Create new checkpoint")
-
-					ui.select(options, { prompt = "Save to", width = 70 }, function(choice)
-						if choice == "base" then
-							agent.save_to_base(active_dir_cs)
-						elseif choice == "Create new checkpoint" then
-							ui.input({ prompt = "", title = "Create New Checkpoint (Name)" }, function(name)
-								if name and name ~= "" then
-									agent.checkpoint_save_to(name, active_dir_cs)
-								end
-							end)
-						elseif choice then
-							agent.checkpoint_save_to(choice, active_dir_cs)
-						end
-					end)
 				end)
 			end,
 			desc = "Save Checkpoint",

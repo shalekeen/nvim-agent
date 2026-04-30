@@ -21,10 +21,6 @@ function M.base:get_system_prompt()
 	return require("nvim-agent.context").get_agent_preamble()
 end
 
-function M.base:get_context_injection_config()
-	return nil
-end
-
 --- Return the permission profile for a given agent.
 --- Adapters override this to provide agent-specific permissions.
 --- @param agent_name string

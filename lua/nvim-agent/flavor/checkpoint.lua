@@ -93,120 +93,55 @@ local function sync_persistent_dirs(base_json, checkpoint_json)
     return vim.json.encode(result)
 end
 
---- Sync user_notes: update shared sections from base, keep checkpoint-only sections
+--- Sync user_notes: update shared sections from base, keep checkpoint-only sections.
+--- A "section" is a block of lines starting with `## <tag>` and continuing until the
+--- next `##` header. The block of lines before the first `##` is the file's header.
+--- Sections present in both files are taken from base; sections present only in the
+--- checkpoint are preserved as-is.
 local function sync_user_notes(base_content, checkpoint_content)
-    -- Parse sections from base
-    local base_sections = {}
-    local current_tag = nil
-    local current_lines = {}
+    local function split_lines(s)
+        return vim.split(s or "", "\n", { plain = true })
+    end
 
-    for line in (base_content or ""):gmatch("[^\n]*") do
-        local tag = line:match("^## (.+)")
-        if tag then
-            if current_tag then
-                base_sections[current_tag] = table.concat(current_lines, "\n")
-            end
-            current_tag = tag
-            current_lines = { line }
-        else
-            if current_tag then
-                table.insert(current_lines, line)
-            end
+    local function append_lines(dst, src)
+        for _, ln in ipairs(src) do
+            table.insert(dst, ln)
         end
     end
-    if current_tag then
-        base_sections[current_tag] = table.concat(current_lines, "\n")
-    end
 
-    -- Parse and rebuild checkpoint, using base sections where they exist
-    local result_lines = {}
-    current_tag = nil
-    current_lines = {}
-    local header_added = false
-
-    for line in (checkpoint_content or ""):gmatch("[^\n]*") do
-        local tag = line:match("^## (.+)")
-        if tag then
-            -- Save previous section
-            if current_tag then
-                if base_sections[current_tag] then
-                    for base_line in base_sections[current_tag]:gmatch("[^\n]*") do
-                        table.insert(result_lines, base_line)
-                    end
-                else
-                    for _, cline in ipairs(current_lines) do
-                        table.insert(result_lines, cline)
-                    end
-                end
-            end
-
-            current_tag = tag
-            current_lines = { line }
-        else
-            if not current_tag and not header_added then
-                table.insert(result_lines, line)
+    -- Parse <content> into { header_lines, ordered_tags, sections_by_tag }.
+    -- header_lines  = the lines before any `##` header (kept as-is)
+    -- ordered_tags  = tags in their original order
+    -- sections      = tag → array of lines (including the `## ` header line itself)
+    local function parse(content)
+        local header_lines = {}
+        local ordered_tags = {}
+        local sections = {}
+        local current_tag = nil
+        for _, line in ipairs(split_lines(content)) do
+            local tag = line:match("^## (.+)")
+            if tag then
+                current_tag = tag
+                table.insert(ordered_tags, tag)
+                sections[tag] = { line }
             elseif current_tag then
-                table.insert(current_lines, line)
-            end
-        end
-    end
-
-    -- Handle last section
-    if current_tag then
-        if base_sections[current_tag] then
-            for base_line in base_sections[current_tag]:gmatch("[^\n]*") do
-                table.insert(result_lines, base_line)
-            end
-        else
-            for _, cline in ipairs(current_lines) do
-                table.insert(result_lines, cline)
-            end
-        end
-    end
-
-    return table.concat(result_lines, "\n")
-end
-
---- Create a checkpoint by copying all context files from active_dir.
---- @param flavor_name string
---- @param checkpoint_name string
---- @param active_dir string|nil  Source active dir (defaults to global active_dir)
-function M.create(flavor_name, checkpoint_name, active_dir)
-    local fdir = flavor_dir(flavor_name)
-    if vim.fn.isdirectory(fdir) ~= 1 then
-        vim.notify("nvim-agent: flavor '" .. flavor_name .. "' not found", vim.log.levels.ERROR)
-        return false
-    end
-
-    local cp_dir = checkpoint_dir(flavor_name, checkpoint_name)
-    if vim.fn.isdirectory(cp_dir) == 1 then
-        vim.notify("nvim-agent: checkpoint '" .. checkpoint_name .. "' already exists", vim.log.levels.ERROR)
-        return false
-    end
-    if not active_dir then
-        vim.notify("nvim-agent: active_dir required to create checkpoint", vim.log.levels.ERROR)
-        return false
-    end
-    vim.fn.mkdir(cp_dir, "p")
-
-    for _, fname in ipairs(CONTEXT_FILES) do
-        local src = active_dir .. "/" .. fname
-        local dst = cp_dir .. "/" .. fname
-
-        if vim.fn.filereadable(src) == 1 then
-            copy_file(src, dst)
-        else
-            vim.notify("nvim-agent: warning - missing file in active context: " .. fname, vim.log.levels.WARN)
-            if fname:match("%.json$") then
-                write_file(dst, "[]")
+                table.insert(sections[current_tag], line)
             else
-                write_file(dst, "")
+                table.insert(header_lines, line)
             end
         end
+        return header_lines, ordered_tags, sections
     end
 
-    write_meta(flavor_name, checkpoint_name, active_dir)
-    return true
+    local _, _, base_sections = parse(base_content)
+    local cp_header, cp_tags, cp_sections = parse(checkpoint_content)
+
+    local result = {}
+    append_lines(result, cp_header)
+    for _, tag in ipairs(cp_tags) do
+        append_lines(result, base_sections[tag] or cp_sections[tag])
+    end
+    return table.concat(result, "\n")
 end
 
 --- Load checkpoint by copying all files to active_dir.
@@ -277,15 +212,14 @@ end
 --- @param checkpoint_name string
 --- @param active_dir string|nil  Source active dir (defaults to global active_dir)
 function M.save_to(flavor_name, checkpoint_name, active_dir)
-    local cp_dir = checkpoint_dir(flavor_name, checkpoint_name)
-
-    if vim.fn.isdirectory(cp_dir) ~= 1 then
-        vim.fn.mkdir(cp_dir, "p")
-    end
-
     if not active_dir then
         vim.notify("nvim-agent: active_dir required to save checkpoint", vim.log.levels.ERROR)
         return false
+    end
+
+    local cp_dir = checkpoint_dir(flavor_name, checkpoint_name)
+    if vim.fn.isdirectory(cp_dir) ~= 1 then
+        vim.fn.mkdir(cp_dir, "p")
     end
 
     local success = true

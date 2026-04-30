@@ -261,32 +261,4 @@ function M.view_file(filepath, opts)
     })
 end
 
---- Edit file in a new buffer (helper for context editing)
---- @param filepath string Path to file
---- @param opts table Options
-function M.edit_file(filepath, opts)
-    opts = opts or {}
-
-    -- Ensure file exists
-    local f = io.open(filepath, 'r')
-    if not f and opts.create_if_missing then
-        f = io.open(filepath, 'w')
-        if f then
-            f:write(opts.default_content or '')
-            f:close()
-        end
-    elseif f then
-        f:close()
-    end
-
-    -- Open in current window or split
-    if opts.split then
-        vim.cmd('split ' .. vim.fn.fnameescape(filepath))
-    elseif opts.vsplit then
-        vim.cmd('vsplit ' .. vim.fn.fnameescape(filepath))
-    else
-        vim.cmd('edit ' .. vim.fn.fnameescape(filepath))
-    end
-end
-
 return M

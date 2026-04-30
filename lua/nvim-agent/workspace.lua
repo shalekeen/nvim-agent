@@ -43,14 +43,24 @@ local function read_json(path)
 	return (ok and type(data) == "table") and data or nil
 end
 
+--- Atomically write JSON to `path`: writes to <path>.tmp, then renames. A crash
+--- mid-write therefore leaves the previous (valid) file intact rather than a
+--- truncated/half-written one that read_json would silently treat as missing.
 local function write_json(path, data)
-	local f = io.open(path, "w")
+	local tmp = path .. ".tmp"
+	local f = io.open(tmp, "w")
 	if not f then
 		vim.notify("nvim-agent: failed to write " .. path, vim.log.levels.ERROR)
 		return false
 	end
 	f:write(vim.json.encode(data))
 	f:close()
+	local ok, err = os.rename(tmp, path)
+	if not ok then
+		os.remove(tmp)
+		vim.notify("nvim-agent: failed to rename " .. tmp .. " → " .. path .. ": " .. tostring(err), vim.log.levels.ERROR)
+		return false
+	end
 	return true
 end
 
@@ -74,14 +84,6 @@ function M.init_runtime(cwd)
 	vim.fn.mkdir(dir .. "/status", "p")
 	vim.fn.mkdir(dir .. "/history", "p")
 	return dir
-end
-
--- Backward-compat aliases used by MCP tools and autocmds.
-function M.project_dir(cwd)
-	return M.runtime_dir(cwd)
-end
-function M.has_metadata(cwd)
-	return M.has_workspace(cwd)
 end
 
 ------------------------------------------------------------------------
@@ -329,13 +331,6 @@ function M.agent_load_content(name, target_dir, cwd)
 		end
 	end
 	return found_any
-end
-
--- Backward-compat alias (old code passed a def table; now we just use name).
-function M.agent_save(def, cwd)
-	if def and def.name then
-		M.agent_create(def.name, cwd)
-	end
 end
 
 ------------------------------------------------------------------------
@@ -605,47 +600,6 @@ function M.save_current_as(workspace_name, cwd)
 		vim.log.levels.INFO
 	)
 	return true
-end
-
-------------------------------------------------------------------------
--- History  (<cwd>/.nvim-agent/history/ — gitignored, persists across restarts)
-------------------------------------------------------------------------
-
---- @param agent_name string
---- @param cwd string|nil
---- @return string
-function M.history_path(agent_name, cwd)
-	return M.runtime_dir(cwd) .. "/history/" .. agent_name .. ".md"
-end
-
---- @param agent_name string
---- @param cwd string|nil
---- @return string
-function M.history_read(agent_name, cwd)
-	local f = io.open(M.history_path(agent_name, cwd), "r")
-	if not f then
-		return ""
-	end
-	local content = f:read("*a")
-	f:close()
-	return content or ""
-end
-
---- @param agent_name string
---- @param text string
---- @param cwd string|nil
---- @return boolean
-function M.history_append(agent_name, text, cwd)
-	cwd = cwd or vim.fn.getcwd()
-	local dir = M.runtime_dir(cwd) .. "/history"
-	vim.fn.mkdir(dir, "p")
-	local f = io.open(M.history_path(agent_name, cwd), "a")
-	if f then
-		f:write(text .. "\n")
-		f:close()
-		return true
-	end
-	return false
 end
 
 return M

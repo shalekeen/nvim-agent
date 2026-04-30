@@ -155,11 +155,15 @@ function M.close(id)
 	require("nvim-agent.terminal").cleanup(id)
 
 	-- Remove the agent's status file so peers stop discovering it.
+	-- We always check, regardless of whether the workspace dir still exists:
+	-- terminal.lua writes the status file unconditionally, so leaking it after
+	-- close would leave a phantom agent visible to any peer that still sees the
+	-- runtime dir.
 	if sess then
 		local workspace_mod = require("nvim-agent.workspace")
 		local cwd = vim.fn.getcwd()
-		if workspace_mod.has_workspace(cwd) then
-			local status_file = workspace_mod.runtime_dir(cwd) .. "/status/" .. sess.name .. ".json"
+		local status_file = workspace_mod.runtime_dir(cwd) .. "/status/" .. sess.name .. ".json"
+		if vim.fn.filereadable(status_file) == 1 then
 			vim.fn.delete(status_file)
 		end
 	end

@@ -48,7 +48,42 @@ local function list_peer_names()
 	return peers
 end
 
---- Append a formatted message to a recipient's mailbox file.
+--- Atomically write `content` to `path` via a `<path>.tmp` rename. A reader
+--- that opens `path` will always see either the previous valid content or
+--- the new full content — never a half-written file.
+local function atomic_write(path, content)
+	local tmp = path .. ".tmp"
+	local f = io.open(tmp, "w")
+	if not f then
+		return false, "could not open " .. tmp .. " for writing"
+	end
+	f:write(content)
+	f:close()
+	local ok, err = os.rename(tmp, path)
+	if not ok then
+		os.remove(tmp)
+		return false, "rename failed: " .. tostring(err)
+	end
+	return true
+end
+
+--- Run a function while holding an exclusive lock on `path`. Releases the
+--- lock unconditionally afterwards (idempotent), even if `fn` errors.
+local function with_lock(path, fn)
+	local got, lock_err = filelock.acquire(path, { agent = AGENT_NAME })
+	if not got then
+		return nil, lock_err
+	end
+	local ok, ret_or_err, second = pcall(fn)
+	filelock.release(path)
+	if not ok then
+		return nil, tostring(ret_or_err)
+	end
+	return ret_or_err, second
+end
+
+--- Append a formatted message to a recipient's mailbox file. Holds an
+--- exclusive lock so concurrent senders cannot interleave bytes.
 local function deliver_message(recipient, from, content)
 	if CWD == "" then
 		return false, "NVIM_AGENT_CWD not set"
@@ -56,13 +91,20 @@ local function deliver_message(recipient, from, content)
 	local msg_dir = project_comm_dir("messages")
 	os.execute("mkdir -p " .. msg_dir)
 	local path = msg_dir .. "/" .. recipient .. ".md"
-	local f = io.open(path, "a")
-	if not f then
-		return false, "could not open mailbox for " .. recipient
-	end
 	local timestamp = os.date("%Y-%m-%d %H:%M:%S")
-	f:write(string.format("\n---\n**From: %s** | %s\n\n%s\n", from, timestamp, content))
-	f:close()
+	local block = string.format("\n---\n**From: %s** | %s\n\n%s\n", from, timestamp, content)
+	local ok, err = with_lock(path, function()
+		local f = io.open(path, "a")
+		if not f then
+			error("could not open mailbox for " .. recipient)
+		end
+		f:write(block)
+		f:close()
+		return true
+	end)
+	if not ok then
+		return false, err
+	end
 	return true
 end
 
@@ -78,16 +120,22 @@ local function read_file_contents(path)
 end
 
 --- Append a timestamped entry to a history file, creating it if needed.
+--- Locked because two instances of the same agent (e.g. across a session
+--- restart) could otherwise interleave writes to the same file.
 local function append_history(path, agent, summary)
 	os.execute("mkdir -p " .. path:match("(.+)/[^/]+$"))
-	local f = io.open(path, "a")
-	if not f then
-		return false
-	end
 	local timestamp = os.date("%Y-%m-%d %H:%M")
-	f:write(string.format("\n---\n**[%s] Agent: %s**\n\n%s\n", timestamp, agent, summary))
-	f:close()
-	return true
+	local block = string.format("\n---\n**[%s] Agent: %s**\n\n%s\n", timestamp, agent, summary)
+	local ok = with_lock(path, function()
+		local f = io.open(path, "a")
+		if not f then
+			error("could not open " .. path)
+		end
+		f:write(block)
+		f:close()
+		return true
+	end)
+	return ok ~= nil
 end
 
 local function empty_object()
@@ -841,14 +889,18 @@ function M.execute(tool_name, arguments)
 			return { { type = "text", text = "Error delivering message: " .. (deliver_err or "?") } }, true
 		end
 
-		-- 2. Write trigger file so the continuation timer can also find it
+		-- 2. Write trigger file so the continuation timer can also find it.
+		--    Locked because the timer truncates this same file when it fires.
 		local trigger_dir = CWD .. "/.nvim-agent/triggers"
 		os.execute("mkdir -p " .. trigger_dir)
-		local tf = io.open(trigger_dir .. "/" .. to .. ".md", "a")
-		if tf then
-			tf:write(string.format("\n[%s] Triggered by %s\n", os.date("%Y-%m-%d %H:%M:%S"), AGENT_NAME))
-			tf:close()
-		end
+		local trigger_path = trigger_dir .. "/" .. to .. ".md"
+		with_lock(trigger_path, function()
+			local tf = io.open(trigger_path, "a")
+			if tf then
+				tf:write(string.format("\n[%s] Triggered by %s\n", os.date("%Y-%m-%d %H:%M:%S"), AGENT_NAME))
+				tf:close()
+			end
+		end)
 
 		-- 3. Wake the recipient's terminal via Neovim RPC
 		local wakeup = "You have a new message from "
@@ -901,14 +953,17 @@ function M.execute(tool_name, arguments)
 				return false, err
 			end
 			-- Write trigger file so the continuation timer wakes the agent within 30 s
-			-- even if the RPC wakeup below fails.
+			-- even if the RPC wakeup below fails. Locked: the timer truncates this file.
 			local trigger_dir = CWD .. "/.nvim-agent/triggers"
 			os.execute("mkdir -p " .. trigger_dir)
-			local tf = io.open(trigger_dir .. "/" .. recipient .. ".md", "a")
-			if tf then
-				tf:write(string.format("\n[%s] Message from %s\n", os.date("%Y-%m-%d %H:%M:%S"), AGENT_NAME))
-				tf:close()
-			end
+			local trigger_path = trigger_dir .. "/" .. recipient .. ".md"
+			with_lock(trigger_path, function()
+				local tf = io.open(trigger_path, "a")
+				if tf then
+					tf:write(string.format("\n[%s] Message from %s\n", os.date("%Y-%m-%d %H:%M:%S"), AGENT_NAME))
+					tf:close()
+				end
+			end)
 			-- Best-effort immediate wakeup (non-fatal on failure).
 			local wakeup = "You have a new message from "
 				.. AGENT_NAME
@@ -951,17 +1006,25 @@ function M.execute(tool_name, arguments)
 		end
 
 		local path = project_comm_dir("messages") .. "/" .. AGENT_NAME .. ".md"
-		local f = io.open(path, "r")
-		if not f then
-			return { { type = "text", text = "No pending messages" } }, false
-		end
-		local content = f:read("*a")
-		f:close()
-
-		-- Clear the mailbox so the hook does not re-inject the same messages
-		local fw = io.open(path, "w")
-		if fw then
-			fw:close()
+		-- Hold the mailbox lock for the entire read+truncate so a concurrent
+		-- deliver_message cannot land between the two ops and get silently
+		-- erased.
+		local content, lock_err = with_lock(path, function()
+			local f = io.open(path, "r")
+			if not f then
+				return nil
+			end
+			local data = f:read("*a")
+			f:close()
+			-- Clear the mailbox so the hook does not re-inject the same messages
+			local fw = io.open(path, "w")
+			if fw then
+				fw:close()
+			end
+			return data
+		end)
+		if lock_err then
+			return { { type = "text", text = "Error: " .. lock_err } }, true
 		end
 
 		if not content or content:match("^%s*$") then
@@ -1002,12 +1065,11 @@ function M.execute(tool_name, arguments)
 		}
 
 		local path = status_dir .. "/" .. AGENT_NAME .. ".json"
-		local f = io.open(path, "w")
-		if not f then
-			return { { type = "text", text = "Error: could not write status file" } }, true
+		-- Atomic rename keeps concurrent readers from seeing a half-written file.
+		local ok, err = atomic_write(path, tostring(json.encode(status)))
+		if not ok then
+			return { { type = "text", text = "Error: " .. err } }, true
 		end
-		f:write(tostring(json.encode(status)))
-		f:close()
 
 		return { { type = "text", text = string.format("Status updated: %s", current_task) } }, false
 

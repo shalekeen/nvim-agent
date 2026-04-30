@@ -24,14 +24,6 @@ function M.setup(opts)
 		local resolved = adapter_mod.resolve(cfg.adapter)
 		adapter_mod.set_active(resolved)
 		resolved:setup()
-	elseif cfg.agent_cmd then
-		-- Backward compat: wrap bare command in a minimal adapter
-		local legacy = adapter_mod.new({
-			get_cmd = function()
-				return cfg.agent_cmd
-			end,
-		})
-		adapter_mod.set_active(legacy)
 	end
 
 	require("nvim-agent.commands").register()
@@ -125,12 +117,12 @@ local function create_and_open_session(flavor_name, checkpoint_name, session_nam
 	return sess
 end
 
---- Startup auto-launch path. When a previous flavor was recorded, skip the
---- picker entirely and launch that flavor. Otherwise fall through to the full
---- workspace + standalone picker so first-time users still get a choice.
+--- Startup auto-launch path. When a previous flavor was recorded AND that
+--- flavor still exists, skip the picker and launch it. Otherwise fall
+--- through to the full workspace + standalone picker so the user can re-pick.
 function M.auto_launch()
 	local last_flavor, last_checkpoint = read_last_flavor()
-	if last_flavor then
+	if last_flavor and require("nvim-agent.flavor").list_contains(last_flavor) then
 		create_and_open_session(last_flavor, last_checkpoint, nil)
 		return
 	end
@@ -621,7 +613,8 @@ function M.workspace_launch(workspace, cwd)
 		-- Write initial status so peers can discover this agent immediately.
 		local status_dir = workspace_mod.runtime_dir(cwd) .. "/status"
 		vim.fn.mkdir(status_dir, "p")
-		local sf = io.open(status_dir .. "/" .. agent.name .. ".json", "w")
+		local status_path = status_dir .. "/" .. agent.name .. ".json"
+		local sf = io.open(status_path, "w")
 		if sf then
 			sf:write(vim.json.encode({
 				agent = agent.name,
@@ -630,6 +623,11 @@ function M.workspace_launch(workspace, cwd)
 				updated_at = os.date("%Y-%m-%dT%H:%M:%SZ"),
 			}))
 			sf:close()
+		else
+			vim.notify(
+				"nvim-agent: failed to write initial status for '" .. agent.name .. "' at " .. status_path,
+				vim.log.levels.WARN
+			)
 		end
 
 		table.insert(created, sess)
