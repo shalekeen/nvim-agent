@@ -46,13 +46,18 @@ function M.write_all(active_dir, process_dir)
     end
 end
 
-function M.get_agent_preamble()
+--- Compose a system prompt with the agent_instruction_header appended.
+--- @param base_prompt string|nil Override for the base system prompt. When nil,
+---                               falls back to config.default_system_prompt.
+--- @return string
+function M.get_agent_preamble(base_prompt)
     local cfg = config.get()
-    local prompt = cfg.default_system_prompt or ""
-    if prompt ~= "" then
-        return prompt .. "\n\n" .. cfg.agent_instruction_header
+    local prompt = base_prompt or cfg.default_system_prompt or ""
+    local header = cfg.agent_instruction_header or ""
+    if prompt ~= "" and header ~= "" then
+        return prompt .. "\n\n" .. header
     end
-    return cfg.agent_instruction_header
+    return prompt ~= "" and prompt or header
 end
 
 return M

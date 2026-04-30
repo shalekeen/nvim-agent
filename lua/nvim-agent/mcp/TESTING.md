@@ -7,17 +7,14 @@ This guide walks you through testing the MCP server integration with Claude Code
 Before testing, verify you have all required components:
 
 ```bash
-# Check Neovim version (need 0.11.5+)
+# Check Neovim version (need 0.10+; the MCP server runs via `nvim -l`)
 nvim --version | head -1
-
-# Check LuaJIT is available
-which luajit
 
 # Check Claude Code is installed
 which claude
 
 # Check all MCP Lua files are present
-ls -la nvim-agent/mcp/*.lua
+ls -la lua/nvim-agent/mcp/*.lua
 ```
 
 ## Step 1: Verify Neovim RPC is Working
@@ -36,27 +33,27 @@ ls -la nvim-agent/mcp/*.lua
 
 3. In another terminal, test RPC connectivity:
    ```bash
-   export NVIM_LISTEN_ADDRESS="<address from step 2>"
-   nvim --server "$NVIM_LISTEN_ADDRESS" --remote-expr "1+1"
+   export NVIM_AGENT_NVIM_ADDR="<address from step 2>"
+   nvim --server "$NVIM_AGENT_NVIM_ADDR" --remote-expr "1+1"
    ```
 
    This should output `2` if RPC is working.
 
 ## Step 2: Test MCP Server Standalone
 
-With the NVIM_LISTEN_ADDRESS set from Step 1:
+With `NVIM_AGENT_NVIM_ADDR` exported from Step 1:
 
 ```bash
-cd nvim-agent/mcp
+cd lua/nvim-agent/mcp
 
 # Test initialize
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | nvim -l server.lua
 
 # Test tools/list
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | nvim -l server.lua
 
 # Test list_buffers (should show buffers open in your Neovim instance)
-echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_buffers","arguments":{}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_buffers","arguments":{}}}' | nvim -l server.lua
 ```
 
 Expected results:
@@ -87,7 +84,7 @@ Expected results:
 Expected results:
 - Hook script exists and is executable
 - settings.json contains UserPromptSubmit hook pointing to the script
-- settings.json contains nvim-agent MCP server config with correct NVIM_LISTEN_ADDRESS
+- settings.json contains nvim-agent MCP server config with correct `NVIM_AGENT_NVIM_ADDR`
 - CLAUDE.md contains nvim-agent block with MCP documentation
 
 ## Step 4: Test in Claude Code
@@ -142,7 +139,7 @@ This tests that the MCP server address updates when Neovim restarts:
    ```
 4. Check that settings.json was updated:
    ```bash
-   cat ~/.claude/settings.json | jq '.mcpServers."nvim-agent".env.NVIM_LISTEN_ADDRESS'
+   cat ~/.claude/settings.json | jq '.mcpServers."nvim-agent".env.NVIM_AGENT_NVIM_ADDR'
    ```
 
    Should show the new address matching `:echo v:servername`
@@ -159,7 +156,7 @@ This tests that the MCP server address updates when Neovim restarts:
 
 ### Common Issues and Fixes:
 
-**"NVIM_LISTEN_ADDRESS not set"**
+**"NVIM_AGENT_NVIM_ADDR not set"**
 - Cause: Environment variable not passed to MCP server
 - Fix: Re-run adapter setup, check settings.json
 
@@ -168,8 +165,8 @@ This tests that the MCP server address updates when Neovim restarts:
 - Fix: Verify Neovim is running, check v:servername matches
 
 **"MCP server not connecting"**
-- Cause: luajit not found or MCP server script missing
-- Fix: Verify luajit in PATH, check server.lua exists
+- Cause: nvim binary not on PATH, or server.lua missing from runtimepath
+- Fix: Verify `which nvim` resolves; confirm `lua/nvim-agent/mcp/server.lua` exists in your install
 
 **"JSON decode error"**
 - Cause: Bug in Lua code generating invalid JSON
@@ -194,12 +191,12 @@ grep -r "MCP Server" ~/.claude/logs/
 Test each tool in isolation to identify issues:
 
 ```bash
-export NVIM_LISTEN_ADDRESS=$(nvim --server /tmp/test.sock --remote-expr 'v:servername')
+export NVIM_AGENT_NVIM_ADDR=$(nvim --server /tmp/test.sock --remote-expr 'v:servername')
 
 # Test each tool
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_buffers","arguments":{}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_buffers","arguments":{}}}' | nvim -l server.lua
 
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_cursor","arguments":{}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_cursor","arguments":{}}}' | nvim -l server.lua
 
 # etc.
 ```

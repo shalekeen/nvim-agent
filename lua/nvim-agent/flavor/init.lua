@@ -66,7 +66,7 @@ local function read_meta(active_dir)
 end
 
 local function is_reserved(name)
-	return name == "active" or name == "sessions" or name == "hooks"
+	return name == "active" or name == "sessions" or name == "hooks" or name == "agent_templates"
 end
 
 --- Create a new flavor by copying current active_dir context as its base.

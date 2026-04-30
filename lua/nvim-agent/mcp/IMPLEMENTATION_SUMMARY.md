@@ -21,7 +21,7 @@ All components have been implemented according to the plan:
   - ✅ Added `setup_mcp_server()` function
   - ✅ Updated `setup()` to call MCP setup
 - ✅ Verified settings.json update logic
-- ✅ Verified NVIM_LISTEN_ADDRESS passing
+- ✅ Verified `NVIM_AGENT_NVIM_ADDR` passing
 
 ### Phase 3: Documentation
 - ✅ Created `nvim-agent/mcp/README.md`
@@ -61,7 +61,7 @@ Main MCP server implementing JSON-RPC 2.0 over stdio:
 - Routes to appropriate handlers
 - Implements `initialize`, `tools/list`, `tools/call`
 - Proper error handling with JSON-RPC error codes
-- Gets NVIM_LISTEN_ADDRESS from environment
+- Gets the parent Neovim socket from `NVIM_AGENT_NVIM_ADDR` (with `NVIM_LISTEN_ADDRESS` as a backward-compat fallback)
 
 ### 2. nvim_rpc.lua (288 lines)
 Neovim RPC wrapper using shell commands:
@@ -91,11 +91,11 @@ Pure Lua JSON encoder/decoder (external library)
 Adapter with MCP integration:
 - `claude_md_content()` - Updated with MCP tool docs
 - `setup_mcp_server()` - New function (93 lines)
-  - Checks for luajit
-  - Gets Neovim server address
+  - Gets Neovim server address from `vim.v.servername`
   - Updates ~/.claude/settings.json
-  - Configures NVIM_LISTEN_ADDRESS environment
-  - Handles idempotent updates
+  - Spawns the MCP server via `nvim -l <server.lua>` (no external `luajit` required)
+  - Configures `NVIM_AGENT_NVIM_ADDR` in the spawn env (we cannot use `NVIM_LISTEN_ADDRESS`, since the spawned `nvim -l` would otherwise try to bind to it)
+  - Handles idempotent updates and migrates legacy entries
 - `setup()` - Calls setup_mcp_server()
 
 ## Tool Catalog
@@ -169,7 +169,7 @@ nvim_rpc function error
    - Creates hook script
    - Updates ~/.claude/settings.json with:
      - UserPromptSubmit hook
-     - MCP server config with NVIM_LISTEN_ADDRESS
+     - MCP server config with `NVIM_AGENT_NVIM_ADDR`
    - Updates ~/.claude/CLAUDE.md
 4. User launches Claude Code from terminal
 5. Claude Code reads settings.json
@@ -237,4 +237,4 @@ To complete integration testing, user should:
 
 The implementation is **feature-complete** according to the plan. All core components are implemented, tested at the protocol level, and ready for integration testing in a live Neovim environment.
 
-The system successfully bridges Claude Code and Neovim using pure Lua without external dependencies beyond luajit and dkjson.
+The system bridges Claude Code and Neovim using pure Lua. The MCP server runs via `nvim -l` (LuaJIT bundled with Neovim); the only third-party dependency is `dkjson`, which is vendored under `lua/nvim-agent/mcp/`.

@@ -131,8 +131,10 @@ end
 
 -- Main server loop
 local function main()
-  -- Check for NVIM_LISTEN_ADDRESS
-  local nvim_addr = os.getenv("NVIM_LISTEN_ADDRESS")
+  -- Locate the parent Neovim's RPC socket. Falls back to NVIM_LISTEN_ADDRESS
+  -- for backward compatibility, but the supported var is NVIM_AGENT_NVIM_ADDR
+  -- because NVIM_LISTEN_ADDRESS is intercepted by `nvim -l` itself.
+  local nvim_addr = os.getenv("NVIM_AGENT_NVIM_ADDR") or os.getenv("NVIM_LISTEN_ADDRESS")
   if not nvim_addr or nvim_addr == "" then
     -- Silent fail - just exit without sending anything
     -- Can't send error without a request ID

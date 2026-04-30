@@ -223,8 +223,8 @@ Claude: I'll update the file.
 
 3. Test manually:
    ```bash
-   export NVIM_LISTEN_ADDRESS=/tmp/nvim.sock
-   echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"edit_buffer","arguments":{"filepath":"test.txt","lines":["hello"]}}}' | luajit server.lua
+   export NVIM_AGENT_NVIM_ADDR=/tmp/nvim.sock
+   echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"edit_buffer","arguments":{"filepath":"test.txt","lines":["hello"]}}}' | nvim -l server.lua
    ```
 
 ### File Opens But Content Not Updated?

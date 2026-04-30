@@ -14,15 +14,14 @@ Neovim Instance (RPC)
 
 ## Prerequisites
 
-- **Neovim 0.11.5+** with RPC support enabled
-- **luajit** in your PATH
+- **Neovim 0.10+** with RPC support enabled (the MCP server runs via `nvim -l`, using the LuaJIT bundled with Neovim)
 - **Claude Code CLI** installed
 
 ## How It Works
 
 1. When you start the nvim-agent adapter, it automatically configures the MCP server in `~/.claude/settings.json`
-2. The configuration includes the `NVIM_LISTEN_ADDRESS` environment variable pointing to your Neovim instance
-3. When Claude Code starts, it launches the MCP server as a subprocess
+2. The configuration includes the `NVIM_AGENT_NVIM_ADDR` environment variable pointing to your Neovim instance's RPC socket. We deliberately do not use `NVIM_LISTEN_ADDRESS`, since `nvim -l` would otherwise try to bind to it.
+3. When Claude Code starts, it launches the MCP server as a subprocess (`nvim -l server.lua`)
 4. The server communicates with Claude Code via JSON-RPC 2.0 over stdin/stdout
 5. The server communicates with Neovim by executing `nvim --server <address> --remote-expr` commands
 6. All tool calls are gated by Claude Code's approval system
@@ -120,31 +119,31 @@ You can test the MCP server manually before using it with Claude Code:
 
 ```bash
 # Set the Neovim address (get this from :echo v:servername in Neovim)
-export NVIM_LISTEN_ADDRESS=/tmp/nvim.sock
+export NVIM_AGENT_NVIM_ADDR=/tmp/nvim.sock
 
 # Test initialize
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | nvim -l server.lua
 
 # Test tools/list
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | nvim -l server.lua
 
 # Test list_buffers
-echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_buffers","arguments":{}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_buffers","arguments":{}}}' | nvim -l server.lua
 
 # Test get_buffer_content (replace 1 with your buffer number)
-echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_buffer_content","arguments":{"bufnr":1}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_buffer_content","arguments":{"bufnr":1}}}' | nvim -l server.lua
 
 # Test open_buffer
-echo '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"open_buffer","arguments":{"filepath":"test.txt"}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"open_buffer","arguments":{"filepath":"test.txt"}}}' | nvim -l server.lua
 
 # Test execute_command
-echo '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"set number"}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"set number"}}}' | nvim -l server.lua
 
 # Test get_cursor
-echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_cursor","arguments":{}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_cursor","arguments":{}}}' | nvim -l server.lua
 
 # Test set_cursor
-echo '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"set_cursor","arguments":{"row":10,"col":0}}}' | luajit server.lua
+echo '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"set_cursor","arguments":{"row":10,"col":0}}}' | nvim -l server.lua
 ```
 
 ## Integration with Claude Code
@@ -155,15 +154,17 @@ Once the adapter's `setup()` function runs, the MCP server is automatically conf
 {
   "mcpServers": {
     "nvim-agent": {
-      "command": "luajit",
-      "args": ["/path/to/nvim-agent/mcp/server.lua"],
+      "command": "/usr/bin/nvim",
+      "args": ["-l", "/path/to/nvim-agent/lua/nvim-agent/mcp/server.lua"],
       "env": {
-        "NVIM_LISTEN_ADDRESS": "/tmp/nvim.sock"
+        "NVIM_AGENT_NVIM_ADDR": "/tmp/nvim.sock"
       }
     }
   }
 }
 ```
+
+(`command` is set dynamically to `vim.v.progpath` so the spawned `nvim` is the same binary the user is running.)
 
 When you launch Claude Code from the nvim-agent terminal, it will automatically start the MCP server and make the tools available.
 
@@ -171,14 +172,14 @@ When you launch Claude Code from the nvim-agent terminal, it will automatically 
 
 ### MCP server not connecting
 
-1. Check that `NVIM_LISTEN_ADDRESS` is set correctly:
+1. Check that `NVIM_AGENT_NVIM_ADDR` is set in `~/.claude/settings.json` and matches your Neovim instance:
    ```vim
    :echo v:servername
    ```
 
-2. Verify luajit is in your PATH:
+2. Verify nvim is in your PATH (the MCP server is launched as `nvim -l server.lua`):
    ```bash
-   which luajit
+   which nvim
    ```
 
 3. Test the MCP server manually (see Manual Testing section above)
@@ -188,13 +189,13 @@ When you launch Claude Code from the nvim-agent terminal, it will automatically 
    tail -f ~/.claude/logs/*
    ```
 
-### "NVIM_LISTEN_ADDRESS not set" error
+### "NVIM_AGENT_NVIM_ADDR not set" error
 
 This means the environment variable is not being passed to the MCP server. Check that:
 
 1. Your Neovim instance has a server name: `:echo v:servername`
 2. The adapter's `setup()` function ran successfully
-3. The `~/.claude/settings.json` file contains the correct NVIM_LISTEN_ADDRESS
+3. The `~/.claude/settings.json` file contains the correct `NVIM_AGENT_NVIM_ADDR` under `mcpServers["nvim-agent"].env`
 
 ### Commands fail with "nvim command failed"
 

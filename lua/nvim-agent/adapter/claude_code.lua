@@ -187,8 +187,10 @@ function M:get_cmd(session)
 	local active_dir = session.active_dir
 	local debug_log = vim.fn.expand("~/.nvim-agent/claude-mcp-debug.log")
 
-	-- Read system prompt from the session's active directory
-	local prompt = read_system_prompt(active_dir) or self:get_system_prompt()
+	-- Compose the agent's system prompt: per-session system_prompt.md (if any)
+	-- as the base, with agent_instruction_header always appended on top so the
+	-- agent knows about the nvim-agent runtime contract.
+	local prompt = require("nvim-agent.context").get_agent_preamble(read_system_prompt(active_dir))
 
 	-- Determine MCP config: per-session file if session given, else global settings
 	local mcp_config
@@ -227,15 +229,6 @@ end
 --- Includes the nvim-agent MCP server with session-specific env vars
 --- and the UserPromptSubmit hook.
 function M:setup_session_mcp(session)
-	vim.fn.system("which luajit 2>/dev/null")
-	if vim.v.shell_error ~= 0 then
-		vim.notify(
-			"nvim-agent: luajit not found. Per-session MCP not configured for session " .. session.id,
-			vim.log.levels.WARN
-		)
-		return
-	end
-
 	local nvim_address = vim.v.servername
 	if not nvim_address or nvim_address == "" then
 		vim.notify(
@@ -254,10 +247,10 @@ function M:setup_session_mcp(session)
 	local settings = {
 		mcpServers = {
 			["nvim-agent"] = {
-				command = "luajit",
-				args = { mcp_server_path },
+				command = vim.v.progpath,
+				args = { "-l", mcp_server_path },
 				env = {
-					NVIM_LISTEN_ADDRESS = nvim_address,
+					NVIM_AGENT_NVIM_ADDR = nvim_address,
 					NVIM_AGENT_ACTIVE_DIR = session.active_dir,
 					NVIM_AGENT_PROCESS_DIR = session.process_dir,
 					NVIM_AGENT_CWD = vim.fn.getcwd(),
@@ -718,13 +711,6 @@ end
 --- Setup MCP server configuration in ~/.claude/settings.json.
 --- Global entry defaults NVIM_AGENT_ACTIVE_DIR to session 1's active dir.
 local function setup_mcp_server()
-	-- Check if luajit is available
-	vim.fn.system("which luajit 2>/dev/null")
-	if vim.v.shell_error ~= 0 then
-		vim.notify("nvim-agent: luajit not found in PATH. MCP server will not be configured.", vim.log.levels.WARN)
-		return
-	end
-
 	local settings_dir = vim.fn.expand("~/.claude")
 	local settings_path = settings_dir .. "/settings.json"
 
@@ -770,9 +756,16 @@ local function setup_mcp_server()
 
 	-- Check if MCP server already configured
 	if existing.mcpServers and existing.mcpServers["nvim-agent"] then
-		-- Update the address in case it changed; ensure both dir vars are set
+		-- Refresh the command/args so users upgrading from the old luajit-based
+		-- entry get migrated to nvim -l automatically.
+		existing.mcpServers["nvim-agent"].command = vim.v.progpath
+		existing.mcpServers["nvim-agent"].args = { "-l", mcp_server_path }
+		-- Update the address in case it changed; ensure both dir vars are set.
+		-- Drop legacy NVIM_LISTEN_ADDRESS so the spawned `nvim -l` doesn't try
+		-- to bind to the parent's socket.
 		existing.mcpServers["nvim-agent"].env = existing.mcpServers["nvim-agent"].env or {}
-		existing.mcpServers["nvim-agent"].env.NVIM_LISTEN_ADDRESS = nvim_address
+		existing.mcpServers["nvim-agent"].env.NVIM_LISTEN_ADDRESS = nil
+		existing.mcpServers["nvim-agent"].env.NVIM_AGENT_NVIM_ADDR = nvim_address
 		existing.mcpServers["nvim-agent"].env.NVIM_AGENT_ACTIVE_DIR = existing.mcpServers["nvim-agent"].env.NVIM_AGENT_ACTIVE_DIR
 			or session1_active
 		existing.mcpServers["nvim-agent"].env.NVIM_AGENT_PROCESS_DIR = existing.mcpServers["nvim-agent"].env.NVIM_AGENT_PROCESS_DIR
@@ -781,10 +774,10 @@ local function setup_mcp_server()
 		-- Add new MCP server configuration
 		existing.mcpServers = existing.mcpServers or {}
 		existing.mcpServers["nvim-agent"] = {
-			command = "luajit",
-			args = { mcp_server_path },
+			command = vim.v.progpath,
+			args = { "-l", mcp_server_path },
 			env = {
-				NVIM_LISTEN_ADDRESS = nvim_address,
+				NVIM_AGENT_NVIM_ADDR = nvim_address,
 				NVIM_AGENT_ACTIVE_DIR = session1_active,
 				NVIM_AGENT_PROCESS_DIR = process_dir,
 			},

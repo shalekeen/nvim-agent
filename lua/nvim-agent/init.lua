@@ -3,6 +3,15 @@ local M = {}
 local config = require("nvim-agent.config")
 
 function M.setup(opts)
+	-- Hard dependencies: bail early with a clear message rather than failing
+	-- later from inside a pcall'd integration point.
+	if not pcall(require, "which-key") then
+		error("nvim-agent: which-key.nvim is required but not found", 2)
+	end
+	if not pcall(require, "barbar") then
+		error("nvim-agent: barbar.nvim is required but not found", 2)
+	end
+
 	config.setup(opts)
 
 	vim.fn.mkdir(config.get().base_dir, "p")
@@ -29,10 +38,14 @@ function M.setup(opts)
 	require("nvim-agent.autocmds").register()
 	require("nvim-agent.keymaps").register()
 
-	-- Initialize flavor/checkpoint selection → creates session 1
-	vim.defer_fn(function()
-		M.ensure_active_flavor()
-	end, 100)
+	-- On startup, auto-launch the previous flavor (if recorded) only when
+	-- auto_open is enabled. Otherwise the user must trigger :NvimAgent
+	-- manually, which goes through the full picker.
+	if cfg.auto_open then
+		vim.defer_fn(function()
+			M.auto_launch()
+		end, 100)
+	end
 end
 
 local function focus_nvim_tree()
@@ -110,6 +123,18 @@ local function create_and_open_session(flavor_name, checkpoint_name, session_nam
 		require("nvim-agent.terminal").open(sess.id)
 	end, 300)
 	return sess
+end
+
+--- Startup auto-launch path. When a previous flavor was recorded, skip the
+--- picker entirely and launch that flavor. Otherwise fall through to the full
+--- workspace + standalone picker so first-time users still get a choice.
+function M.auto_launch()
+	local last_flavor, last_checkpoint = read_last_flavor()
+	if last_flavor then
+		create_and_open_session(last_flavor, last_checkpoint, nil)
+		return
+	end
+	M.ensure_active_flavor()
 end
 
 --- Show the flavor + checkpoint picker for a new session with an already-chosen name.
@@ -502,16 +527,13 @@ local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
 		-- Persist merged result back to agent def dir
 		workspace_mod.agent_save_content(agent_name, active_dir, cwd)
 	else
-		-- def_only: the agent definition directory is the source of truth.
-		-- Create a backing flavor (so the session has a named flavor) but load
-		-- content from the def dir, not the flavor.
+		-- def_only: the agent definition directory in cwd is the source of truth.
+		-- Load it into active_dir, then label the session with the agent's name
+		-- via .flavor_meta.json. We deliberately do NOT plant a global flavor at
+		-- ~/.nvim-agent/<agent_name>/ — that pollutes flavor.list() with names
+		-- of every workspace agent the user has ever launched.
 		local flavor_mod = require("nvim-agent.flavor")
-		if not flavor_mod.list_contains(agent_name) then
-			flavor_mod.create(agent_name)
-		end
-		-- Load def dir content directly into active_dir (source of truth)
 		workspace_mod.agent_load_content(agent_name, active_dir, cwd)
-		-- Write flavor meta so the session tracks which flavor backs it
 		flavor_mod.write_meta(agent_name, nil, active_dir)
 	end
 end
@@ -1661,6 +1683,10 @@ end
 
 -- Terminal (operate on current session)
 function M.open()
+	if not require("nvim-agent.session").get_current() then
+		M.ensure_active_flavor()
+		return
+	end
 	require("nvim-agent.terminal").open()
 end
 
@@ -1669,6 +1695,10 @@ function M.close()
 end
 
 function M.toggle()
+	if not require("nvim-agent.session").get_current() then
+		M.ensure_active_flavor()
+		return
+	end
 	require("nvim-agent.terminal").toggle()
 end
 

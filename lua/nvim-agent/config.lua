@@ -3,7 +3,10 @@ local M = {}
 M.defaults = {
 	adapter = nil,
 	agent_cmd = nil, -- deprecated: use adapter instead
-	auto_open = false, -- Auto-open agent terminal on Neovim startup
+	-- On startup: when true, auto-launch the previously used flavor (or show
+	-- the picker on first run). When false, do nothing on startup; the user
+	-- triggers :NvimAgent manually, which always shows the full picker.
+	auto_open = false,
 	base_dir = vim.fn.expand("~/.nvim-agent"),
 	context_files = {
 		system_prompt = "system_prompt.md",

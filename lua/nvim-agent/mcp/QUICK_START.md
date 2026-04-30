@@ -19,13 +19,15 @@
    Should show:
    ```json
    {
-     "command": "luajit",
-     "args": ["/path/to/nvim-agent/mcp/server.lua"],
+     "command": "/usr/bin/nvim",
+     "args": ["-l", "/path/to/nvim-agent/lua/nvim-agent/mcp/server.lua"],
      "env": {
-       "NVIM_LISTEN_ADDRESS": "/tmp/nvim.xxx.0"
+       "NVIM_AGENT_NVIM_ADDR": "/tmp/nvim.xxx.0"
      }
    }
    ```
+
+   (`command` is whatever `vim.v.progpath` resolves to in your running Neovim — typically `/usr/bin/nvim` or the binary your package manager installed.)
 
 3. **Check instructions** - Verify CLAUDE.md has MCP documentation:
    ```bash
@@ -248,7 +250,7 @@ Prevent auto-save if needed:
 
 ### Changes not visible
 - Check Claude is using "edit_buffer" (not "Edit")
-- Verify NVIM_LISTEN_ADDRESS matches `:echo v:servername`
+- Verify `NVIM_AGENT_NVIM_ADDR` (in `~/.claude/settings.json`) matches `:echo v:servername`
 
 ### Can't connect to Neovim
 - Check Neovim is running

@@ -91,10 +91,15 @@ function M:setup_session_mcp(session)
     local settings = {
         mcpServers = {
             ["nvim-agent"] = {
-                command = "luajit",
-                args = { mcp_server_path },
+                -- Run the MCP server using the bundled LuaJIT in the parent
+                -- Neovim binary, so users don't need an external `luajit`.
+                command = vim.v.progpath,
+                args = { "-l", mcp_server_path },
                 env = {
-                    NVIM_LISTEN_ADDRESS = vim.v.servername,
+                    -- NVIM_AGENT_NVIM_ADDR (not NVIM_LISTEN_ADDRESS) — the
+                    -- latter would make the spawned `nvim -l` try to bind to
+                    -- the parent's socket.
+                    NVIM_AGENT_NVIM_ADDR = vim.v.servername,
                     NVIM_AGENT_ACTIVE_DIR = session.active_dir,
                 },
             },
@@ -198,7 +203,7 @@ Reads `system_prompt.md` from `session.active_dir` and passes it via `--system-p
 
 ### `setup_session_mcp(session)`
 Writes `session.dir/mcp-settings.json` with:
-- The nvim-agent MCP server (`luajit mcp/server.lua`) with `NVIM_LISTEN_ADDRESS` and `NVIM_AGENT_ACTIVE_DIR` set to `session.active_dir`
+- The nvim-agent MCP server (run via `nvim -l lua/nvim-agent/mcp/server.lua`) with `NVIM_AGENT_NVIM_ADDR` and `NVIM_AGENT_ACTIVE_DIR` set to `session.active_dir`
 - The `UserPromptSubmit` hook pointing to `~/.nvim-agent/hooks/claude_code_prompt.sh`
 - `permissions.allow = ["mcp__nvim-agent__*"]`
 
@@ -223,15 +228,17 @@ end
 ## Best Practices
 
 ### 1. Check Prerequisites
-Always check that required tools are available before setting them up:
+Always check that required tools are available before setting them up. For example, if your adapter shells out to a CLI like `claude`:
 
 ```lua
-vim.fn.system("which luajit 2>/dev/null")
+vim.fn.system("which claude 2>/dev/null")
 if vim.v.shell_error ~= 0 then
-    vim.notify("luajit not found in PATH", vim.log.levels.WARN)
+    vim.notify("claude not found in PATH", vim.log.levels.WARN)
     return
 end
 ```
+
+(Note: the bundled `claude_code` adapter no longer needs to check for `luajit` — the MCP server is now spawned via `nvim -l`, using the LuaJIT bundled with Neovim.)
 
 ### 2. Idempotent Global Setup
 Make `setup()` idempotent — it can run on every Neovim startup:
@@ -244,7 +251,7 @@ end
 ```
 
 ### 3. Per-Session MCP Is Always Fresh
-`setup_session_mcp()` is called fresh for every new session, so it always has the correct `NVIM_AGENT_ACTIVE_DIR` and current `NVIM_LISTEN_ADDRESS`. No idempotency check needed.
+`setup_session_mcp()` is called fresh for every new session, so it always has the correct `NVIM_AGENT_ACTIVE_DIR` and current `NVIM_AGENT_NVIM_ADDR`. No idempotency check needed.
 
 ### 4. Error Handling
 Provide helpful error messages when things go wrong:
