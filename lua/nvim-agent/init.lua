@@ -611,23 +611,46 @@ function M.workspace_launch(workspace, cwd)
 		end
 
 		-- Write initial status so peers can discover this agent immediately.
+		-- Lock + tmpfile-rename: races with the agent's own MCP update_status
+		-- that may fire seconds after launch on the same path. Lock keeps the
+		-- two writes serialized; rename keeps readers from seeing a half-written file.
 		local status_dir = workspace_mod.runtime_dir(cwd) .. "/status"
 		vim.fn.mkdir(status_dir, "p")
 		local status_path = status_dir .. "/" .. agent.name .. ".json"
-		local sf = io.open(status_path, "w")
-		if sf then
-			sf:write(vim.json.encode({
-				agent = agent.name,
-				role = (entry.role and entry.role ~= "") and entry.role or nil,
-				current_task = "launching",
-				updated_at = os.date("%Y-%m-%dT%H:%M:%SZ"),
-			}))
-			sf:close()
-		else
+		local payload = vim.json.encode({
+			agent = agent.name,
+			role = (entry.role and entry.role ~= "") and entry.role or nil,
+			current_task = "launching",
+			updated_at = os.date("%Y-%m-%dT%H:%M:%SZ"),
+		})
+		local filelock = require("nvim-agent.mcp.filelock")
+		local got, lock_err = filelock.acquire(status_path, { agent = "nvim-launch", retries = 5, delay_ms = 100 })
+		if not got then
 			vim.notify(
-				"nvim-agent: failed to write initial status for '" .. agent.name .. "' at " .. status_path,
+				"nvim-agent: could not lock initial status for '" .. agent.name .. "': " .. tostring(lock_err),
 				vim.log.levels.WARN
 			)
+		else
+			local tmp = status_path .. ".tmp"
+			local sf = io.open(tmp, "w")
+			if sf then
+				sf:write(payload)
+				sf:close()
+				local renamed, rerr = os.rename(tmp, status_path)
+				if not renamed then
+					os.remove(tmp)
+					vim.notify(
+						"nvim-agent: failed to rename initial status for '" .. agent.name .. "': " .. tostring(rerr),
+						vim.log.levels.WARN
+					)
+				end
+			else
+				vim.notify(
+					"nvim-agent: failed to write initial status for '" .. agent.name .. "' at " .. tmp,
+					vim.log.levels.WARN
+				)
+			end
+			filelock.release(status_path)
 		end
 
 		table.insert(created, sess)

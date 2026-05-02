@@ -8,7 +8,7 @@ if script_dir then
   package.path = script_dir .. "?.lua;" .. package.path
 end
 
-local json = require("dkjson")
+local json = vim.json
 local tools = require("tools")
 
 -- JSON-RPC error codes
@@ -61,9 +61,9 @@ end
 
 -- Handle initialize method
 local function handle_initialize(id, params)
-  -- Use dkjson.empty_object to ensure tools is encoded as {} not []
+  -- vim.empty_dict() ensures `tools` is encoded as {} not [].
   local capabilities = {
-    tools = json.empty_object or setmetatable({}, {__jsontype = "object"})
+    tools = vim.empty_dict()
   }
 
   send_result(id, {
@@ -147,17 +147,12 @@ local function main()
   -- Read and process requests line by line
   for line in io.lines() do
     if line and line ~= "" then
-      -- Parse JSON request
-      local request, pos, err = json.decode(line)
-
-      if err then
-        -- Skip malformed requests silently - can't send error without valid request
-        -- Claude Code rejects error responses with null IDs
-      else
-        -- Handle the request in protected mode
+      -- Parse JSON request. vim.json.decode raises on malformed input;
+      -- pcall to skip silently (we can't send an error without a valid request id).
+      local ok_d, request = pcall(json.decode, line)
+      if ok_d then
         local ok, error_msg = pcall(handle_request, request)
         if not ok then
-          -- Send error response instead of writing to stderr
           send_error(request.id, ERROR_CODES.INTERNAL_ERROR, "Internal error: " .. tostring(error_msg))
         end
       end

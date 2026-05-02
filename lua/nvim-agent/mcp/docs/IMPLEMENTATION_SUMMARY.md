@@ -8,7 +8,6 @@ All components have been implemented according to the plan:
 
 ### Phase 1: MCP Server Core
 - ✅ Created `nvim-agent/mcp/` directory structure
-- ✅ Downloaded and added `dkjson.lua` (version 2.5)
 - ✅ Implemented `nvim_rpc.lua` with 8 functions
 - ✅ Implemented `tools.lua` with 8 tool definitions
 - ✅ Implemented `server.lua` with JSON-RPC 2.0 loop
@@ -40,7 +39,7 @@ nvim-agent/mcp/
 ├── server.lua          # Main MCP server (JSON-RPC 2.0)
 ├── nvim_rpc.lua        # Neovim RPC wrapper via shell commands
 ├── tools.lua           # Tool definitions and handlers
-├── dkjson.lua          # JSON encoder/decoder library
+├── filelock.lua        # Cross-process file locking (mkdir-based)
 ├── README.md           # Usage and tool documentation
 ├── TESTING.md          # Integration testing guide
 └── IMPLEMENTATION_SUMMARY.md  # This file
@@ -84,10 +83,7 @@ MCP tool definitions and handlers:
 - `M.execute()` - Routes tool calls to nvim_rpc functions
 - Returns proper MCP response format
 
-### 4. dkjson.lua (733 lines)
-Pure Lua JSON encoder/decoder (external library)
-
-### 5. claude_code.lua (Updated)
+### 4. claude_code.lua (Updated)
 Adapter with MCP integration:
 - `claude_md_content()` - Updated with MCP tool docs
 - `setup_mcp_server()` - New function (93 lines)
@@ -148,9 +144,10 @@ end
 ```
 
 ### JSON Handling
-- Using dkjson.lua for standalone Lua (server.lua)
-- Neovim's vim.json for data transfer with Neovim
-- Proper error handling for decode failures
+- Uses `vim.json` everywhere — the MCP server runs via `nvim -l`, so the
+  `vim` global (and `vim.json.encode`/`vim.json.decode`/`vim.empty_dict`)
+  is available without any third-party library
+- Proper error handling for decode failures (`pcall`-wrapped)
 
 ### Error Propagation
 Errors flow cleanly through the stack:
@@ -237,4 +234,4 @@ To complete integration testing, user should:
 
 The implementation is **feature-complete** according to the plan. All core components are implemented, tested at the protocol level, and ready for integration testing in a live Neovim environment.
 
-The system bridges Claude Code and Neovim using pure Lua. The MCP server runs via `nvim -l` (LuaJIT bundled with Neovim); the only third-party dependency is `dkjson`, which is vendored under `lua/nvim-agent/mcp/`.
+The system bridges Claude Code and Neovim using pure Lua. The MCP server runs via `nvim -l` (LuaJIT bundled with Neovim) and uses Neovim's built-in `vim.json` for all encoding/decoding — no third-party libraries are required.

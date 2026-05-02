@@ -10,7 +10,16 @@
 
 local M = {}
 
-local json = require("dkjson")
+local json = vim.json
+
+-- Decode a JSON response from --remote-expr. Returns value or (nil, err).
+local function decode_response(result)
+	local ok, data = pcall(json.decode, result)
+	if not ok then
+		return nil, "JSON decode: " .. tostring(data)
+	end
+	return data
+end
 
 -- Unique sequence number for temp file names
 local _tmp_seq = 0
@@ -175,9 +184,9 @@ function M.list_buffers()
 	if not result then
 		return nil, err
 	end
-	local bufs, _, derr = json.decode(result)
+	local bufs, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	return bufs
 end
@@ -199,9 +208,9 @@ function M.get_buffer_content(bufnr)
 	if not result then
 		return nil, err
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	if data.error then
 		return nil, data.error
@@ -239,9 +248,9 @@ function M.set_buffer_content(bufnr, lines)
 	if not result then
 		return nil, err2
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	if data.error then
 		return nil, data.error
@@ -274,9 +283,9 @@ function M.open_buffer(filepath)
 	if not result then
 		return nil, err2
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	return data.bufnr
 end
@@ -304,9 +313,9 @@ function M.close_buffer(bufnr, force)
 	if not result then
 		return nil, err
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	if data.error then
 		return nil, data.error
@@ -337,9 +346,9 @@ function M.execute_command(cmd)
 	if not result then
 		return nil, err2
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	if data.error then
 		return nil, data.error
@@ -374,9 +383,9 @@ function M.get_cursor()
 	if not result then
 		return nil, err
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	return data
 end
@@ -496,9 +505,9 @@ function M.edit_and_focus_buffer(filepath, content, start_line, end_line, save, 
 	if not result then
 		return nil, err3
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	if data and data.error then
 		return nil, data.error
@@ -541,9 +550,9 @@ function M.trigger_agent(agent_name, text)
 	if not result then
 		return nil, err3
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	if not data.success then
 		return nil, data.error
@@ -616,9 +625,9 @@ function M.spawn_agent(agent_name, system_prompt, role, user_notes)
 	if not result then
 		return nil, rpc_err
 	end
-	local data, _, derr = json.decode(result)
+	local data, derr = decode_response(result)
 	if derr then
-		return nil, "JSON decode: " .. derr
+		return nil, derr
 	end
 	if not data.success then
 		return nil, data.error

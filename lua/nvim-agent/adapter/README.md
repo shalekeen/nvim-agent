@@ -312,7 +312,7 @@ nvim-agent/
 │   ├── server.lua
 │   ├── nvim_rpc.lua
 │   ├── tools.lua          # reads NVIM_AGENT_ACTIVE_DIR from env
-│   └── dkjson.lua
+│   └── filelock.lua
 └── ...
 ```
 

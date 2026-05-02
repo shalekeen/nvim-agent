@@ -209,9 +209,8 @@ This usually means Neovim is not responding on the RPC address. Check:
 
 This usually indicates a bug in the Lua code that generates invalid JSON. Check:
 
-1. The dkjson.lua library is present and correctly downloaded
-2. The Lua code properly escapes special characters in strings
-3. Test the specific tool call manually to see the raw output
+1. The Lua code properly escapes special characters in strings
+2. Test the specific tool call manually to see the raw output
 
 ## Security Notes
 
@@ -233,4 +232,4 @@ This usually indicates a bug in the Lua code that generates invalid JSON. Check:
 - `server.lua` - Main MCP server (JSON-RPC 2.0 over stdio)
 - `nvim_rpc.lua` - Neovim RPC wrapper using shell commands
 - `tools.lua` - Tool definitions and handlers
-- `dkjson.lua` - Pure Lua JSON encoder/decoder
+- `filelock.lua` - Cross-process file locking (mkdir-based)

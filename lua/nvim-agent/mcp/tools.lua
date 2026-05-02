@@ -1,7 +1,7 @@
 -- MCP tool definitions and handlers for Neovim control
 
 local nvim_rpc = require("nvim_rpc")
-local json = require("dkjson")
+local json = vim.json
 local filelock = require("filelock")
 
 -- Context directories inherited from the Claude Code process environment.
@@ -138,10 +138,6 @@ local function append_history(path, agent, summary)
 	return ok ~= nil
 end
 
-local function empty_object()
-	return json.empty_object or setmetatable({}, { __jsontype = "object" })
-end
-
 local M = {}
 
 ------------------------------------------------------------------------
@@ -263,7 +259,7 @@ M.definitions = {
 		description = "List all open file buffers in Neovim. Returns buffer number, file path, modified status, and filetype. Special buffers (NvimTree, terminal, dashboard) are excluded.",
 		inputSchema = {
 			type = "object",
-			properties = empty_object(),
+			properties = vim.empty_dict(),
 			required = {},
 		},
 	},
@@ -365,7 +361,7 @@ M.definitions = {
 		description = "Get the current cursor position in the active window",
 		inputSchema = {
 			type = "object",
-			properties = empty_object(),
+			properties = vim.empty_dict(),
 			required = {},
 		},
 	},
@@ -425,7 +421,7 @@ M.definitions = {
 			.. "them from being re-injected on the next prompt.",
 		inputSchema = {
 			type = "object",
-			properties = empty_object(),
+			properties = vim.empty_dict(),
 			required = {},
 		},
 	},
@@ -452,7 +448,7 @@ M.definitions = {
 			.. "Use this to check what peers are working on before starting a new task.",
 		inputSchema = {
 			type = "object",
-			properties = empty_object(),
+			properties = vim.empty_dict(),
 			required = {},
 		},
 	},
@@ -464,7 +460,7 @@ M.definitions = {
 			.. "a peer who is better suited. Each agent's role is set by the user in role.md.",
 		inputSchema = {
 			type = "object",
-			properties = empty_object(),
+			properties = vim.empty_dict(),
 			required = {},
 		},
 	},
@@ -499,7 +495,7 @@ M.definitions = {
 			.. "Use this when you need to recall exactly what you did in previous sessions.",
 		inputSchema = {
 			type = "object",
-			properties = empty_object(),
+			properties = vim.empty_dict(),
 			required = {},
 		},
 	},
@@ -511,7 +507,7 @@ M.definitions = {
 			.. "Use this at the start of a new session to orient yourself on past work.",
 		inputSchema = {
 			type = "object",
-			properties = empty_object(),
+			properties = vim.empty_dict(),
 			required = {},
 		},
 	},
@@ -766,7 +762,7 @@ function M.execute(tool_name, arguments)
 		if err then
 			return { { type = "text", text = "Error: " .. err } }, true
 		end
-		return { { type = "text", text = json.encode(buffers or {}, { indent = true }) } }, false
+		return { { type = "text", text = json.encode(buffers or {}) } }, false
 
 	-- ----------------------------------------------------------------
 	-- get_buffer_content (advanced)
@@ -864,7 +860,7 @@ function M.execute(tool_name, arguments)
 			return { { type = "text", text = "Error: " .. err } }, true
 		end
 
-		return { { type = "text", text = json.encode(cursor or {}, { indent = true }) } }, false
+		return { { type = "text", text = json.encode(cursor or {}) } }, false
 
 	-- ----------------------------------------------------------------
 	-- trigger_agent  (deliver message + wake terminal immediately)
@@ -1065,10 +1061,18 @@ function M.execute(tool_name, arguments)
 		}
 
 		local path = status_dir .. "/" .. AGENT_NAME .. ".json"
-		-- Atomic rename keeps concurrent readers from seeing a half-written file.
-		local ok, err = atomic_write(path, tostring(json.encode(status)))
+		-- Lock + atomic rename: lock serializes against the parent Neovim's
+		-- initial-status writer (init.lua workspace_launch); atomic rename
+		-- keeps concurrent readers from seeing a half-written file.
+		local ok, err = with_lock(path, function()
+			local wok, werr = atomic_write(path, json.encode(status))
+			if not wok then
+				error(werr)
+			end
+			return true
+		end)
 		if not ok then
-			return { { type = "text", text = "Error: " .. err } }, true
+			return { { type = "text", text = "Error: " .. tostring(err) } }, true
 		end
 
 		return { { type = "text", text = string.format("Status updated: %s", current_task) } }, false
