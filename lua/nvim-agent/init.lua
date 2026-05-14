@@ -320,7 +320,8 @@ function M.session_list_picker()
 
 	local options = {}
 	for _, sess in ipairs(sessions) do
-		local cp = sess.checkpoint and ("@ " .. sess.checkpoint) or "@ base"
+		local cp_name = require("nvim-agent.flavor").current_checkpoint(sess.active_dir)
+		local cp = cp_name and ("@ " .. cp_name) or "@ base"
 		local marker = (sess.id == session_mod.current_id) and " *" or ""
 		table.insert(options, string.format("%s: %s %s%s", sess.name, sess.flavor, cp, marker))
 	end
@@ -351,7 +352,8 @@ function M.session_list()
 	end
 	local lines = {}
 	for _, sess in ipairs(sessions) do
-		local cp = sess.checkpoint and ("@ " .. sess.checkpoint) or "@ base"
+		local cp_name = require("nvim-agent.flavor").current_checkpoint(sess.active_dir)
+		local cp = cp_name and ("@ " .. cp_name) or "@ base"
 		local marker = (sess.id == session_mod.current_id) and " *" or ""
 		table.insert(lines, string.format("  %s: %s %s%s", sess.name, sess.flavor, cp, marker))
 	end
@@ -1578,7 +1580,8 @@ function M.pick_session(prompt, callback)
 	local ui = require("nvim-agent.ui")
 	local options = {}
 	for _, sess in ipairs(sessions) do
-		local cp = sess.checkpoint and ("@ " .. sess.checkpoint) or "@ base"
+		local cp_name = require("nvim-agent.flavor").current_checkpoint(sess.active_dir)
+		local cp = cp_name and ("@ " .. cp_name) or "@ base"
 		local marker = (sess.id == session_mod.current_id) and " *" or ""
 		table.insert(options, string.format("%s: %s %s%s", sess.name, sess.flavor, cp, marker))
 	end
@@ -1989,6 +1992,8 @@ function M.flavor_load(name, active_dir)
 			break
 		end
 	end
+	-- Persist so auto_launch on next startup picks up THIS flavor at base.
+	persist_flavor_choice(name, nil)
 	vim.notify("nvim-agent: flavor '" .. name .. "' loaded", vim.log.levels.INFO)
 end
 
@@ -2105,6 +2110,8 @@ function M.select_checkpoint_replacement(flavor_name, sess, callback)
 		end
 		sess.flavor = flavor_name
 		sess.checkpoint = cp
+		-- Persist so auto_launch on next startup remembers this selection.
+		persist_flavor_choice(flavor_name, cp)
 		vim.notify(
 			"nvim-agent: session '" .. sess.name .. "' reloaded with flavor '" .. flavor_name .. "'",
 			vim.log.levels.INFO
@@ -2136,6 +2143,9 @@ function M.checkpoint_load(name, active_dir)
 			break
 		end
 	end
+	-- Persist so auto_launch on next startup picks up THIS checkpoint, not
+	-- whatever was persisted when the session was first created.
+	persist_flavor_choice(current_flavor, name)
 	vim.notify("nvim-agent: checkpoint '" .. name .. "' loaded", vim.log.levels.INFO)
 end
 
@@ -2208,6 +2218,9 @@ function M.save_to_base(active_dir)
 		return
 	end
 	require("nvim-agent.flavor").save(current_flavor, active_dir)
+	-- flavor.save writes checkpoint=nil into .flavor_meta.json, so persist
+	-- the same on the cwd-level memory: this session is now "at base".
+	persist_flavor_choice(current_flavor, nil)
 	vim.notify("nvim-agent: saved to base flavor '" .. current_flavor .. "'", vim.log.levels.INFO)
 end
 

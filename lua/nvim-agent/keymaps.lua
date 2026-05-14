@@ -725,12 +725,22 @@ function M.register()
 						return
 					end
 					local cps = require("nvim-agent.flavor.checkpoint").list(current)
-					if #cps == 0 then
-						vim.notify("nvim-agent: no checkpoints", vim.log.levels.INFO)
-						return
+					-- Always offer "base" as the first option — without it, once
+					-- a non-base checkpoint exists you can't get back to base via
+					-- this picker. "base" routes to flavor.load (no checkpoint arg),
+					-- which copies the flavor's root files into active_dir and
+					-- writes checkpoint=nil to .flavor_meta.json.
+					local options = { "base (default)" }
+					for _, cp in ipairs(cps) do
+						table.insert(options, cp)
 					end
-					ui.select(cps, { prompt = "Load checkpoint", width = 70 }, function(choice)
-						if choice then
+					ui.select(options, { prompt = "Load checkpoint", width = 70 }, function(choice)
+						if not choice then
+							return
+						end
+						if choice == "base (default)" then
+							agent.flavor_load(current, active_dir_cl)
+						else
 							agent.checkpoint_load(choice, active_dir_cl)
 						end
 					end)

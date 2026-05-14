@@ -65,8 +65,17 @@ local function read_meta(active_dir)
 	return nil
 end
 
+-- Subdirectories under base_dir that are managed by the plugin, NOT user
+-- flavors. flavor.list() filters these out so they don't appear in pickers.
+-- "last_flavor" is the per-cwd active-flavor memory dir (see flavor/last.lua) —
+-- it's a dir of JSON files, not a flavor; was missing from this list and
+-- showed up as a phantom flavor in the picker.
 local function is_reserved(name)
-	return name == "active" or name == "sessions" or name == "hooks" or name == "agent_templates"
+	return name == "active"
+		or name == "sessions"
+		or name == "hooks"
+		or name == "agent_templates"
+		or name == "last_flavor"
 end
 
 --- Create a new flavor by copying current active_dir context as its base.

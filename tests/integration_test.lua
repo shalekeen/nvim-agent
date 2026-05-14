@@ -16,9 +16,7 @@ if plugin_root == "" or plugin_root == "tests" then
 	plugin_root = "."
 end
 
-package.path = plugin_root .. "/lua/?.lua;"
-	.. plugin_root .. "/lua/?/init.lua;"
-	.. package.path
+package.path = plugin_root .. "/lua/?.lua;" .. plugin_root .. "/lua/?/init.lua;" .. package.path
 
 -- Add the plugin to runtimepath so vim.api.nvim_get_runtime_file() can resolve
 -- mcp/server.lua during the claude_code adapter setup. Without this the
@@ -125,20 +123,12 @@ local ap = io.open(tmp_active .. "/agent_prompt.md", "w")
 ap:write("AGENT_ADDENDUM")
 ap:close()
 local p_full = context.compose_system_prompt(tmp_active)
-assert_eq(
-	"compose: all three layers, in order",
-	p_full,
-	"PREAMBLE\n\nFLAVOR_PROMPT\n\nAGENT_ADDENDUM"
-)
+assert_eq("compose: all three layers, in order", p_full, "PREAMBLE\n\nFLAVOR_PROMPT\n\nAGENT_ADDENDUM")
 
 -- Empty agent_prompt.md → layer 3 is omitted (no dangling blank line).
 io.open(tmp_active .. "/agent_prompt.md", "w"):close()
 local p_empty_agent = context.compose_system_prompt(tmp_active)
-assert_eq(
-	"compose: empty agent_prompt.md is omitted",
-	p_empty_agent,
-	"PREAMBLE\n\nFLAVOR_PROMPT"
-)
+assert_eq("compose: empty agent_prompt.md is omitted", p_empty_agent, "PREAMBLE\n\nFLAVOR_PROMPT")
 
 -- With no preamble configured → layers 2 + 3 only.
 config.setup({ default_system_prompt = "BASE", nvim_agent_preamble = "" })
@@ -170,7 +160,9 @@ vim.fn.mkdir(tmp_base, "p")
 config.setup({ base_dir = tmp_base })
 
 -- Reserved (must not appear in flavor list)
-for _, name in ipairs({ "active", "sessions", "hooks", "agent_templates" }) do
+-- "last_flavor" was introduced by the per-cwd active-flavor fix and is a
+-- DIRECTORY of JSON files, not a flavor. It must be filtered.
+for _, name in ipairs({ "active", "sessions", "hooks", "agent_templates", "last_flavor" }) do
 	vim.fn.mkdir(tmp_base .. "/" .. name, "p")
 end
 -- Real flavors
@@ -180,6 +172,8 @@ end
 -- Hidden dir (must be skipped by the dotfile filter)
 vim.fn.mkdir(tmp_base .. "/.cache", "p")
 -- Stray file (must be skipped by the isdirectory filter)
+-- This is also the legacy global ~/.nvim-agent/last_flavor.json file from
+-- before the per-cwd fix — it must NOT leak into the flavor list either.
 do
 	local f = io.open(tmp_base .. "/last_flavor.json", "w")
 	f:write("{}")
@@ -195,7 +189,7 @@ assert_eq("flavor.list[1] = dev", listed[1], "dev")
 assert_eq("flavor.list[2] = exploratory", listed[2], "exploratory")
 assert_eq("flavor.list[3] = review", listed[3], "review")
 
-for _, reserved in ipairs({ "active", "sessions", "hooks", "agent_templates" }) do
+for _, reserved in ipairs({ "active", "sessions", "hooks", "agent_templates", "last_flavor" }) do
 	check(
 		"flavor.list excludes reserved name '" .. reserved .. "'",
 		not contains(listed, reserved),
@@ -203,7 +197,7 @@ for _, reserved in ipairs({ "active", "sessions", "hooks", "agent_templates" }) 
 	)
 end
 check("flavor.list excludes dotfile dirs", not contains(listed, ".cache"))
-check("flavor.list excludes plain files", not contains(listed, "last_flavor.json"))
+check("flavor.list excludes plain files (legacy last_flavor.json)", not contains(listed, "last_flavor.json"))
 
 -- Cleanup
 vim.fn.delete(tmp_base, "rf")
