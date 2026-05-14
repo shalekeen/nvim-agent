@@ -53,35 +53,16 @@ local function focus_nvim_tree()
 	end, 200)
 end
 
---- Persist the last-used flavor/checkpoint to ~/.nvim-agent/last_flavor.json.
---- Powers the "Use Active - <flavor>" default option on next startup.
---- (Sessions are ephemeral; this file is the only cross-restart persistence.)
+--- Per-cwd "last used flavor" persistence wrappers — see
+--- lua/nvim-agent/flavor/last.lua for the path scheme and rationale.
+--- These thin wrappers default `cwd` to the current Neovim cwd, which is
+--- what every caller in this file wants.
 local function persist_flavor_choice(flavor_name, checkpoint_name)
-	local meta = { flavor = flavor_name, checkpoint = checkpoint_name }
-	local path = config.get().base_dir .. "/last_flavor.json"
-	local f = io.open(path, "w")
-	if f then
-		f:write(vim.json.encode(meta))
-		f:close()
-	end
+	require("nvim-agent.flavor.last").persist(vim.fn.getcwd(), flavor_name, checkpoint_name)
 end
 
---- Read the last-used flavor/checkpoint from ~/.nvim-agent/last_flavor.json.
---- @return string|nil flavor_name
---- @return string|nil checkpoint_name
 local function read_last_flavor()
-	local path = config.get().base_dir .. "/last_flavor.json"
-	local f = io.open(path, "r")
-	if not f then
-		return nil, nil
-	end
-	local content = f:read("*a")
-	f:close()
-	local ok, data = pcall(vim.json.decode, content)
-	if ok and type(data) == "table" then
-		return data.flavor, data.checkpoint
-	end
-	return nil, nil
+	return require("nvim-agent.flavor.last").read(vim.fn.getcwd())
 end
 
 --- Create a session for the given flavor+checkpoint, populate its active_dir,
