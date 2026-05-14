@@ -671,10 +671,13 @@ function M.execute(tool_name, arguments)
 			if arguments.cursor_line then
 				msg = msg .. string.format(", cursor at line %d", arguments.cursor_line)
 			end
+		elseif result.was_already_open then
+			-- Buffer already open in the user's editor — we edited it in
+			-- place but did NOT close it. This used to be a bug.
+			msg = msg .. string.format(" [buffer %d already open, left in place]", result.bufnr)
 		else
 			msg = msg .. ", buffer closed"
 		end
-
 		return { { type = "text", text = msg } }, false
 
 	-- ----------------------------------------------------------------

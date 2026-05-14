@@ -413,6 +413,9 @@ function M.edit_and_focus_buffer(filepath, content, start_line, end_line, save, 
 		return nil, err2
 	end
 
+	-- The actual edit logic lives in nvim-agent.mcp.buffer_ops so it's
+	-- directly testable from `nvim -l tests/foo.lua`. Here we just read
+	-- the tmp files, split content into lines, and call into it.
 	local lua_code = string.format(
 		[[
     local fp_tmp      = '%s'
@@ -436,57 +439,17 @@ function M.edit_and_focus_buffer(filepath, content, start_line, end_line, save, 
       table.remove(new_lines)
     end
 
-    -- Ensure parent directory exists before loading/writing
-    local dir = vim.fn.fnamemodify(filepath, ':h')
-    if dir and dir ~= '' then
-      vim.fn.mkdir(dir, 'p')
-    end
+    local result = require('nvim-agent.mcp.buffer_ops').edit({
+      filepath    = filepath,
+      new_lines   = new_lines,
+      start_line  = start_line,
+      end_line    = end_line,
+      save        = should_save,
+      cursor_line = cursor_line,
+      review      = review,
+    })
 
-    -- Load the buffer silently without switching any window
-    local bufnr = vim.fn.bufadd(filepath)
-    vim.fn.bufload(bufnr)
-    vim.bo[bufnr].buflisted = true
-
-    -- Apply content: replace a range or the whole file
-    if start_line and end_line then
-      vim.api.nvim_buf_set_lines(bufnr, start_line - 1, end_line, false, new_lines)
-    else
-      vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
-    end
-
-    if should_save then
-      local ok, write_err = pcall(function()
-        vim.api.nvim_buf_call(bufnr, function() vim.cmd('write') end)
-      end)
-      if not ok then
-        return vim.json.encode({error = 'write failed: ' .. tostring(write_err)})
-      end
-    end
-
-    -- Position cursor if requested (only meaningful in review mode)
-    if cursor_line and review then
-      -- Find a window displaying this buffer, or use nvim_buf_call
-      local target_win = nil
-      for _, win in ipairs(vim.api.nvim_list_wins()) do
-        if vim.api.nvim_win_get_buf(win) == bufnr then
-          target_win = win
-          break
-        end
-      end
-      if target_win then
-        local line_count = vim.api.nvim_buf_line_count(bufnr)
-        local safe_line = math.min(cursor_line, line_count)
-        vim.api.nvim_win_set_cursor(target_win, {safe_line, 0})
-      end
-    end
-
-    -- Silent mode (review=false): close the buffer after saving
-    if not review then
-      vim.bo[bufnr].buflisted = false
-      pcall(vim.api.nvim_buf_delete, bufnr, { force = false })
-    end
-
-    return vim.json.encode({bufnr = bufnr, closed = not review})
+    return vim.json.encode(result)
   ]],
 		fp_tmp,
 		content_tmp,
@@ -496,6 +459,11 @@ function M.edit_and_focus_buffer(filepath, content, start_line, end_line, save, 
 		cursor_line and tostring(cursor_line) or "nil",
 		review and "true" or "false"
 	)
+
+	local result, err3 = nvim_lua_eval(lua_code)
+	-- Clean up in case Neovim side errored before os.remove
+	os.remove(content_tmp)
+	os.remove(fp_tmp)
 
 	local result, err3 = nvim_lua_eval(lua_code)
 	-- Clean up in case Neovim side errored before os.remove
