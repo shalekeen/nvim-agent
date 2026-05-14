@@ -23,7 +23,7 @@ local M = adapter_base.new({})
 -- Permission profiles are built from a small set of named tool groups so that
 -- changes to the MCP tool surface land in one place.
 local TOOL_GROUPS = {
-	read_builtins  = { "Read(*)", "Glob(*)", "Grep(*)" },
+	read_builtins = { "Read(*)", "Glob(*)", "Grep(*)" },
 	write_builtins = { "Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)" },
 	mcp_read = {
 		"mcp__nvim-agent__read_file",
@@ -58,10 +58,18 @@ end
 local PERMISSION_PROFILES = {
 	-- Full access: can read, write, execute, and use all MCP tools.
 	-- For: Senior SWEs, Junior SWEs
-	["full"] = { allow = {
-		"Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)",
-		"mcp__nvim-agent__*",
-	}, deny = {} },
+	["full"] = {
+		allow = {
+			"Bash(*)",
+			"Read(*)",
+			"Write(*)",
+			"Edit(*)",
+			"Glob(*)",
+			"Grep(*)",
+			"mcp__nvim-agent__*",
+		},
+		deny = {},
+	},
 
 	-- QA: full filesystem access via Claude built-ins, plus read-only MCP
 	-- surface and coordination tools. (get_cursor is QA-specific.)
@@ -98,10 +106,10 @@ PERMISSION_PROFILES["no-code"] = PERMISSION_PROFILES["oversight"]
 --- @return table  { allow: string[], deny: string[] }
 function M:get_agent_permissions(agent_name, cwd)
 	cwd = cwd or vim.fn.getcwd()
-	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 
 	-- Try to read permissions.json from the agent's definition directory
-	local def_dir = workspace_mod.agent_content_dir(agent_name, cwd)
+	local def_dir = agent_mod.content_dir(agent_name, cwd)
 	if def_dir then
 		local perm_path = def_dir .. "/permissions.json"
 		local f = io.open(perm_path, "r")
@@ -197,7 +205,10 @@ function M:setup_session_mcp(session)
 
 	local mcp_server_path = vim.api.nvim_get_runtime_file("lua/nvim-agent/mcp/server.lua", false)[1]
 	if not mcp_server_path or not vim.loop.fs_stat(mcp_server_path) then
-		vim.notify("nvim-agent: MCP server script not found on runtimepath (lua/nvim-agent/mcp/server.lua)", vim.log.levels.WARN)
+		vim.notify(
+			"nvim-agent: MCP server script not found on runtimepath (lua/nvim-agent/mcp/server.lua)",
+			vim.log.levels.WARN
+		)
 		return
 	end
 

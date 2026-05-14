@@ -1,9 +1,9 @@
 -- Workspace integration test for nvim-agent.
 -- Run with: nvim -l tests/workspace_test.lua
 --
--- Covers the project-mode surface: workspace init, agent definitions,
--- content load with template overlay, agent-template linking, and the
--- workspace manifest CRUD. No real claude CLI or nvim socket required.
+-- Covers the workspace-module surface: init, runtime dir layout, manifest
+-- CRUD (workspace_list/get/save/delete), and atomic config persistence.
+-- Agent-definition tests live in tests/agent_test.lua.
 
 -- ---------------------------------------------------------------------------
 -- Bootstrapping (mirrors tests/integration_test.lua).
@@ -15,9 +15,7 @@ if plugin_root == "" or plugin_root == "tests" then
 	plugin_root = "."
 end
 
-package.path = plugin_root .. "/lua/?.lua;"
-	.. plugin_root .. "/lua/?/init.lua;"
-	.. package.path
+package.path = plugin_root .. "/lua/?.lua;" .. plugin_root .. "/lua/?/init.lua;" .. package.path
 
 vim.opt.runtimepath:append(plugin_root)
 
@@ -83,6 +81,7 @@ local config = require("nvim-agent.config")
 config.setup({ base_dir = base_dir })
 
 local workspace = require("nvim-agent.workspace")
+local agent = require("nvim-agent.agent")
 
 -- ---------------------------------------------------------------------------
 -- 1. workspace.init creates def_dir + .nvim-agent runtime + config.json
@@ -99,130 +98,13 @@ check("workspace_def_dir written to config.json", workspace.read_config(cwd).wor
 check("has_workspace returns true after init", workspace.has_workspace(cwd) == true)
 
 -- ---------------------------------------------------------------------------
--- 2. Agent definitions: create, list, get, content round-trip, delete.
+-- 2. Workspace manifests: save → list → launchable structure → delete.
+--    Agent fixtures are created via agent.create so the manifest entries
+--    point at real def dirs (matches production behavior).
 -- ---------------------------------------------------------------------------
 
-assert_eq("agent_create('Alice') returns true", workspace.agent_create("Alice", cwd), true)
-assert_eq("agent_create('Bob') returns true", workspace.agent_create("Bob", cwd), true)
-
-local agents = workspace.agent_list(cwd)
-check("agent_list returns 2 agents", #agents == 2, "got " .. #agents)
-assert_eq("agent_list[1].name = Alice", agents[1].name, "Alice")
-assert_eq("agent_list[2].name = Bob", agents[2].name, "Bob")
-
-local alice = workspace.agent_get("Alice", cwd)
-check("agent_get('Alice') returns table with name", alice ~= nil and alice.name == "Alice")
-check("agent_get('Nonexistent') returns nil", workspace.agent_get("Nonexistent", cwd) == nil)
-
--- Write content into Alice's def dir, then load it into a fake session active dir.
-local alice_def = workspace.agent_content_dir("Alice", cwd)
-write(alice_def .. "/system_prompt.md", "Alice's prompt\n")
-write(alice_def .. "/user_notes.md", "Be polite.\n")
-write(alice_def .. "/persistent_dirs.json", '[{"tag":"src","path":"/tmp/src"}]')
-write(alice_def .. "/role.md", "lead implementer\n")
-
-local active_alice = sandbox .. "/sessions/main/active-alice"
-vim.fn.mkdir(active_alice, "p")
-local found = workspace.agent_load_content("Alice", active_alice, cwd)
-assert_eq("agent_load_content returns true", found, true)
-assert_eq("system_prompt.md copied to active_dir", read(active_alice .. "/system_prompt.md"), "Alice's prompt\n")
-assert_eq("user_notes.md copied to active_dir", read(active_alice .. "/user_notes.md"), "Be polite.\n")
-assert_eq("role.md copied to active_dir", read(active_alice .. "/role.md"), "lead implementer\n")
-
--- agent_save_content writes the active_dir back into the def dir (used by
--- the "save current session as flavor" workflow).
-write(active_alice .. "/system_prompt.md", "Alice's prompt v2\n")
-workspace.agent_save_content("Alice", active_alice, cwd)
-assert_eq(
-	"agent_save_content persists changes to def dir",
-	read(alice_def .. "/system_prompt.md"),
-	"Alice's prompt v2\n"
-)
-
--- agent_delete removes the def dir.
-workspace.agent_delete("Bob", cwd)
-local agents_after_delete = workspace.agent_list(cwd)
-check("agent_list returns 1 after deleting Bob", #agents_after_delete == 1)
-assert_eq("remaining agent is Alice", agents_after_delete[1].name, "Alice")
-
--- ---------------------------------------------------------------------------
--- 3. Agent templates: create + load + link via .agent_meta.json + overlay.
--- ---------------------------------------------------------------------------
-
--- Create a template by writing the four template files into a source dir,
--- then calling template_create.
-local template_src = sandbox .. "/template-src"
-vim.fn.mkdir(template_src, "p")
-write(template_src .. "/system_prompt.md", "TEMPLATE prompt\n")
-write(template_src .. "/user_notes.md", "TEMPLATE notes\n")
-write(template_src .. "/persistent_dirs.json", "[]")
-write(template_src .. "/role.md", "TEMPLATE role\n")
-
-assert_eq("template_create returns true", workspace.template_create("SeniorSWE", template_src), true)
-check(
-	"template lives at base_dir/agent_templates/<name>/",
-	vim.fn.filereadable(base_dir .. "/agent_templates/SeniorSWE/system_prompt.md") == 1
-)
-
-local templates = workspace.template_list()
-check("template_list returns SeniorSWE", #templates == 1 and templates[1] == "SeniorSWE")
-
--- template_load copies the template's files into a target dir (used at session
--- launch as the first step before agent overlays are applied).
-local template_target = sandbox .. "/template-target"
-vim.fn.mkdir(template_target, "p")
-workspace.template_load("SeniorSWE", template_target)
-assert_eq(
-	"template_load copied system_prompt.md",
-	read(template_target .. "/system_prompt.md"),
-	"TEMPLATE prompt\n"
-)
-assert_eq("template_load copied role.md", read(template_target .. "/role.md"), "TEMPLATE role\n")
-
--- Linking: agent_set_template writes .agent_meta.json in the agent's def dir.
-workspace.agent_set_template("Alice", "SeniorSWE", cwd)
-assert_eq("agent_get_template returns SeniorSWE", workspace.agent_get_template("Alice", cwd), "SeniorSWE")
-local meta_path = alice_def .. "/.agent_meta.json"
-check("agent_set_template wrote .agent_meta.json", vim.fn.filereadable(meta_path) == 1)
-
--- The whole point of the template system: when agent_load_content runs and the
--- agent has a template link, the template is laid down first then the agent's
--- own files overlay on top. This is what fixes the "duplicated copies" concern.
-local active_alice2 = sandbox .. "/sessions/main/active-alice2"
-vim.fn.mkdir(active_alice2, "p")
-workspace.agent_load_content("Alice", active_alice2, cwd)
-
--- system_prompt.md was overridden by Alice's def dir → Alice wins.
-assert_eq(
-	"template overlay: agent's system_prompt.md wins",
-	read(active_alice2 .. "/system_prompt.md"),
-	"Alice's prompt v2\n"
-)
--- role.md was set on the agent → Alice wins.
-assert_eq("template overlay: agent's role.md wins", read(active_alice2 .. "/role.md"), "lead implementer\n")
--- The template wrote user_notes.md = "TEMPLATE notes\n" but Alice also has a
--- user_notes.md = "Be polite.\n", so Alice wins. This also confirms the
--- overlay actually runs (rather than the raw template leaking through).
-assert_eq("template overlay: agent's user_notes.md wins", read(active_alice2 .. "/user_notes.md"), "Be polite.\n")
-
--- Now blow away one of Alice's files and confirm the template fills the gap.
-os.remove(alice_def .. "/role.md")
-local active_alice3 = sandbox .. "/sessions/main/active-alice3"
-vim.fn.mkdir(active_alice3, "p")
-workspace.agent_load_content("Alice", active_alice3, cwd)
-assert_eq(
-	"template overlay: template fills missing role.md",
-	read(active_alice3 .. "/role.md"),
-	"TEMPLATE role\n"
-)
-
--- template_delete removes from disk.
-workspace.template_delete("SeniorSWE", cwd)
-check("template_delete removed dir", vim.fn.isdirectory(base_dir .. "/agent_templates/SeniorSWE") == 0)
-
--- ---------------------------------------------------------------------------
--- 4. Workspace manifests: save → list → launchable structure → delete.
--- ---------------------------------------------------------------------------
+agent.create("Alice", cwd)
+agent.create("Bob", cwd)
 
 workspace.workspace_save({
 	name = "feature-dev",
@@ -249,7 +131,7 @@ workspace.workspace_delete("feature-dev", cwd)
 check("workspace_delete removed manifest", #workspace.workspace_list(cwd) == 0)
 
 -- ---------------------------------------------------------------------------
--- 5. atomic write_json: a half-written file from an earlier crash must not
+-- 3. atomic write_json: a half-written file from an earlier crash must not
 --    corrupt the read path. Simulate by writing garbage to config.json then
 --    confirm read_config returns nil (treats it as missing) rather than
 --    throwing.
@@ -263,6 +145,91 @@ check("read_config returns nil on corrupt file", workspace.read_config(cwd) == n
 workspace.write_config(cwd, { workspace_def_dir = ".test-defs" })
 check("config.json valid after rewrite", workspace.read_config(cwd).workspace_def_dir == ".test-defs")
 check("no .tmp file lingers", vim.fn.filereadable(workspace.config_path(cwd) .. ".tmp") == 0)
+
+-- ---------------------------------------------------------------------------
+-- 4. Unit tests — error paths and pure-constructor helpers.
+-- ---------------------------------------------------------------------------
+
+-- 4a. runtime_dir is a pure path constructor: returns a path regardless of
+-- whether the directory exists. Callers are expected to mkdir as needed.
+local fresh = sandbox .. "/uninitialized-project"
+vim.fn.mkdir(fresh, "p")
+assert_eq("runtime_dir always returns <cwd>/.nvim-agent", workspace.runtime_dir(fresh), fresh .. "/.nvim-agent")
+check("runtime_dir does NOT create the directory", vim.fn.isdirectory(fresh .. "/.nvim-agent") == 0)
+
+-- 4b. Without init, has_workspace is false and def_dir is nil.
+check("has_workspace false on uninitialized cwd", workspace.has_workspace(fresh) == false)
+check("def_dir nil on uninitialized cwd", workspace.def_dir(fresh) == nil)
+
+-- 4c. read_config returns nil when no config.json exists.
+check("read_config returns nil when config.json missing", workspace.read_config(fresh) == nil)
+
+-- 4d. workspace_list/workspace_get return empty/nil before init.
+assert_eq("workspace_list returns empty on uninitialized cwd", #workspace.workspace_list(fresh), 0)
+check("workspace_get returns nil on uninitialized cwd", workspace.workspace_get("anything", fresh) == nil)
+
+-- 4e. workspace_get on the configured cwd but missing-manifest returns nil.
+check("workspace_get('NoSuchManifest') returns nil after init", workspace.workspace_get("NoSuchManifest", cwd) == nil)
+
+-- 4f. workspace_delete on a missing manifest returns false.
+assert_eq(
+	"workspace_delete on missing manifest returns false",
+	workspace.workspace_delete("NoSuchManifest", cwd),
+	false
+)
+
+-- ---------------------------------------------------------------------------
+-- 5. Unit tests — remove_agent_from_workspaces edge cases.
+-- This is the workspace-side reaction to agent.delete; it must be a no-op
+-- when the agent appears in zero manifests, and it must touch ALL manifests
+-- that reference the agent (not just the first one).
+-- ---------------------------------------------------------------------------
+
+-- 5a. No-op when the agent isn't in any manifest.
+workspace.workspace_save({
+	name = "ws-without-ghost",
+	agents = { { name = "Alice", role = "lead" } },
+}, cwd)
+workspace.remove_agent_from_workspaces("GhostAgent", cwd)
+local untouched = workspace.workspace_get("ws-without-ghost", cwd)
+check("no-op: manifest still exists", untouched ~= nil)
+check("no-op: untouched manifest still has Alice", untouched and #untouched.agents == 1)
+
+-- 5b. Strips the agent from MULTIPLE manifests in one call.
+agent.create("Removable", cwd)
+workspace.workspace_save({
+	name = "ws-a",
+	agents = { { name = "Alice" }, { name = "Removable" } },
+}, cwd)
+workspace.workspace_save({
+	name = "ws-b",
+	agents = { { name = "Removable" }, { name = "Bob" } },
+}, cwd)
+workspace.remove_agent_from_workspaces("Removable", cwd)
+
+local ws_a = workspace.workspace_get("ws-a", cwd)
+local ws_b = workspace.workspace_get("ws-b", cwd)
+check("ws-a no longer contains Removable", ws_a and #ws_a.agents == 1 and ws_a.agents[1].name == "Alice")
+check("ws-b no longer contains Removable", ws_b and #ws_b.agents == 1 and ws_b.agents[1].name == "Bob")
+
+-- ---------------------------------------------------------------------------
+-- 6. Unit tests — save_current_as guards.
+-- save_current_as is the live-session snapshotter. It MUST refuse to run
+-- when no workspace is initialized AND when no live sessions exist (it's
+-- read-only against session_mod.list()).
+-- ---------------------------------------------------------------------------
+
+-- 6a. Refuses on an uninitialized cwd.
+assert_eq("save_current_as returns false on uninitialized cwd", workspace.save_current_as("anything", fresh), false)
+
+-- 6b. Refuses when workspace is initialized but no live sessions exist.
+-- session_mod.list() in this headless test context returns empty.
+assert_eq(
+	"save_current_as returns false when no live sessions",
+	workspace.save_current_as("would-be-snapshot", cwd),
+	false
+)
+check("save_current_as didn't create a manifest when refused", workspace.workspace_get("would-be-snapshot", cwd) == nil)
 
 -- ---------------------------------------------------------------------------
 -- Cleanup + summary.

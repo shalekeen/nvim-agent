@@ -169,32 +169,44 @@ function M.register()
 		-- Workspace lifecycle
 		{
 			"<leader>awi",
-			function() agent.workspace_init() end,
+			function()
+				agent.workspace_init()
+			end,
 			desc = "Init workspace (choose definition directory)",
 		},
 		{
 			"<leader>awn",
-			function() agent.workspace_new() end,
+			function()
+				agent.workspace_new()
+			end,
 			desc = "New workspace definition (interactive)",
 		},
 		{
 			"<leader>aws",
-			function() agent.workspace_save() end,
+			function()
+				agent.workspace_save()
+			end,
 			desc = "Save live sessions → workspace definition",
 		},
 		{
 			"<leader>awl",
-			function() agent.workspace_list() end,
+			function()
+				agent.workspace_list()
+			end,
 			desc = "List workspace definitions",
 		},
 		{
 			"<leader>awL",
-			function() agent.workspace_launch_picker() end,
+			function()
+				agent.workspace_launch_picker()
+			end,
 			desc = "Launch workspace (picker over manifests; bootstraps init/new if empty)",
 		},
 		{
 			"<leader>awr",
-			function() agent.workspace_remove() end,
+			function()
+				agent.workspace_remove()
+			end,
 			desc = "Remove workspace definition",
 		},
 
@@ -202,22 +214,30 @@ function M.register()
 		{ "<leader>awa", group = "Agents" },
 		{
 			"<leader>awan",
-			function() agent.agent_new_interactive() end,
+			function()
+				agent.agent_new_interactive()
+			end,
 			desc = "New agent in workspace",
 		},
 		{
 			"<leader>awal",
-			function() agent.agent_list_ui() end,
+			function()
+				agent.agent_list_ui()
+			end,
 			desc = "List agents",
 		},
 		{
 			"<leader>awar",
-			function() agent.agent_remove() end,
+			function()
+				agent.agent_remove()
+			end,
 			desc = "Remove agent",
 		},
 		{
 			"<leader>awas",
-			function() agent.agent_save_current() end,
+			function()
+				agent.agent_save_current()
+			end,
 			desc = "Save live session → agent definition",
 		},
 
@@ -225,22 +245,30 @@ function M.register()
 		{ "<leader>awe", group = "Edit Agent Files" },
 		{
 			"<leader>awep",
-			function() agent.edit_agent_file("system_prompt.md") end,
+			function()
+				agent.edit_agent_file("system_prompt.md")
+			end,
 			desc = "Edit agent system prompt",
 		},
 		{
 			"<leader>aweu",
-			function() agent.edit_agent_file("user_notes.md") end,
+			function()
+				agent.edit_agent_file("user_notes.md")
+			end,
 			desc = "Edit agent user notes",
 		},
 		{
 			"<leader>awed",
-			function() agent.edit_agent_file("persistent_dirs.json") end,
+			function()
+				agent.edit_agent_file("persistent_dirs.json")
+			end,
 			desc = "Edit agent persistent dirs",
 		},
 		{
 			"<leader>awer",
-			function() agent.edit_agent_file("role.md") end,
+			function()
+				agent.edit_agent_file("role.md")
+			end,
 			desc = "Edit agent role",
 		},
 
@@ -553,17 +581,23 @@ function M.register()
 		{ "<leader>ah", group = "History" },
 		{
 			"<leader>aha",
-			function() agent.history_view_agent() end,
+			function()
+				agent.history_view_agent()
+			end,
 			desc = "View history for an agent (picker)",
 		},
 		{
 			"<leader>ahw",
-			function() agent.history_view_workspace() end,
+			function()
+				agent.history_view_workspace()
+			end,
 			desc = "View history for all workspace agents",
 		},
 		{
 			"<leader>ahp",
-			function() agent.history_view_project() end,
+			function()
+				agent.history_view_project()
+			end,
 			desc = "View project history (all agents)",
 		},
 

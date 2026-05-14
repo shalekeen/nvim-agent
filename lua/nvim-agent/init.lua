@@ -400,11 +400,11 @@ end
 local function pick_flavor_for_ws_agent(agent_name, cwd, on_done)
 	local ui = require("nvim-agent.ui")
 	local flavor_mod = require("nvim-agent.flavor")
-	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 
 	local global_flavors = flavor_mod.list()
-	local ws_agents = workspace_mod.agent_list(cwd)
-	local agent_templates = workspace_mod.template_list()
+	local ws_agents = agent_mod.list(cwd)
+	local agent_templates = agent_mod.template_list()
 
 	local options = { "Agent definition only" }
 	local opt_map = { ["Agent definition only"] = { type = "def_only" } }
@@ -475,7 +475,7 @@ end
 --- @param sel table  { type, flavor?, checkpoint?, source_agent? }
 --- @param cwd string
 local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
-	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 	if sel.type == "global" then
 		local flavor_mod = require("nvim-agent.flavor")
 		local checkpoint_mod = require("nvim-agent.flavor.checkpoint")
@@ -485,13 +485,13 @@ local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
 			flavor_mod.load(sel.flavor, nil, active_dir)
 		end
 		-- Overlay def dir content on top (def dir wins for any existing files)
-		workspace_mod.agent_load_content(agent_name, active_dir, cwd)
+		agent_mod.load_content(agent_name, active_dir, cwd)
 		-- Persist the merged result back so the agent retains this flavor choice
-		workspace_mod.agent_save_content(agent_name, active_dir, cwd)
+		agent_mod.save_content(agent_name, active_dir, cwd)
 	elseif sel.type == "template" then
 		-- Copy files from another agent's def dir into this agent's def dir
-		local src_dir = workspace_mod.agent_content_dir(sel.source_agent, cwd)
-		local dest_dir = workspace_mod.agent_content_dir(agent_name, cwd)
+		local src_dir = agent_mod.content_dir(sel.source_agent, cwd)
+		local dest_dir = agent_mod.content_dir(agent_name, cwd)
 		if src_dir and dest_dir then
 			local files = {
 				"system_prompt.md",
@@ -508,16 +508,16 @@ local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
 				end
 			end
 		end
-		workspace_mod.agent_load_content(agent_name, active_dir, cwd)
+		agent_mod.load_content(agent_name, active_dir, cwd)
 	elseif sel.type == "agent_template" then
 		-- Load from a global agent template, then overlay agent def dir on top
-		workspace_mod.template_load(sel.template, active_dir)
+		agent_mod.template_load(sel.template, active_dir)
 		-- Link the agent to the template for future reference
-		workspace_mod.agent_set_template(agent_name, sel.template, cwd)
+		agent_mod.set_template(agent_name, sel.template, cwd)
 		-- Overlay agent-specific files (if any exist in the def dir)
-		workspace_mod.agent_load_content(agent_name, active_dir, cwd)
+		agent_mod.load_content(agent_name, active_dir, cwd)
 		-- Persist merged result back to agent def dir
-		workspace_mod.agent_save_content(agent_name, active_dir, cwd)
+		agent_mod.save_content(agent_name, active_dir, cwd)
 	else
 		-- def_only: the agent definition directory in cwd is the source of truth.
 		-- Load it into active_dir, then label the session with the agent's name
@@ -525,8 +525,7 @@ local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
 		-- ~/.nvim-agent/<agent_name>/ — that pollutes flavor.list() with names
 		-- of every workspace agent the user has ever launched.
 		local flavor_mod = require("nvim-agent.flavor")
-		workspace_mod.agent_load_content(agent_name, active_dir, cwd)
-		flavor_mod.write_meta(agent_name, nil, active_dir)
+		agent_mod.load_content(agent_name, active_dir, cwd)
 	end
 end
 
@@ -540,6 +539,7 @@ function M.workspace_launch(workspace, cwd)
 	cwd = cwd or vim.fn.getcwd()
 	local session_mod = require("nvim-agent.session")
 	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 	local agent_entries = workspace.agents or {}
 
 	-- Write .claude/settings.json in the project dir so agents don't get
@@ -665,7 +665,7 @@ function M.workspace_launch(workspace, cwd)
 		end
 
 		local entry = agent_entries[idx]
-		local agent = workspace_mod.agent_get(entry.name, cwd)
+		local agent = agent_mod.get(entry.name, cwd)
 
 		if not agent then
 			vim.notify(
@@ -678,7 +678,7 @@ function M.workspace_launch(workspace, cwd)
 
 		-- Agents that already have a stored flavor/checkpoint (from a prior session)
 		-- skip the picker and load their definition directory as-is.
-		local def_dir_path = workspace_mod.agent_content_dir(entry.name, cwd)
+		local def_dir_path = agent_mod.content_dir(entry.name, cwd)
 		local has_meta = def_dir_path ~= nil and vim.fn.filereadable(def_dir_path .. "/.flavor_meta.json") == 1
 
 		if has_meta then
@@ -822,24 +822,25 @@ function M.workspace_launch_picker(name)
 	-- No workspace dir at all: bootstrap by initializing one, then drop into
 	-- the manifest-creation flow.
 	if not workspace_mod.has_workspace(cwd) then
-		ui.input(
-			{ prompt = "", title = "No workspace here yet — initialize one (directory name)", default = ".nvim-workspace" },
-			function(dir_name)
-				if not dir_name or dir_name == "" then
-					return
-				end
-				local dd = workspace_mod.init(cwd, dir_name)
-				vim.notify(
-					string.format(
-						"nvim-agent: workspace initialized.\n  Definitions (git): %s/\n  Runtime (gitignored): %s/",
-						dd,
-						workspace_mod.runtime_dir(cwd)
-					),
-					vim.log.levels.INFO
-				)
-				M.workspace_new()
+		ui.input({
+			prompt = "",
+			title = "No workspace here yet — initialize one (directory name)",
+			default = ".nvim-workspace",
+		}, function(dir_name)
+			if not dir_name or dir_name == "" then
+				return
 			end
-		)
+			local dd = workspace_mod.init(cwd, dir_name)
+			vim.notify(
+				string.format(
+					"nvim-agent: workspace initialized.\n  Definitions (git): %s/\n  Runtime (gitignored): %s/",
+					dd,
+					workspace_mod.runtime_dir(cwd)
+				),
+				vim.log.levels.INFO
+			)
+			M.workspace_new()
+		end)
 		return
 	end
 
@@ -941,7 +942,7 @@ function M.workspace_edit()
 				end
 
 				if choice == "Add existing agent" then
-					local agents = workspace_mod.agent_list(cwd)
+					local agents = require("nvim-agent.agent").list(cwd)
 					if #agents == 0 then
 						vim.notify("nvim-agent: no agents defined — create one first", vim.log.levels.INFO)
 						edit_menu()
@@ -1081,7 +1082,7 @@ function M.workspace_new()
 				end
 
 				if choice == "Add existing agent" then
-					local agents = workspace_mod.agent_list(cwd)
+					local agents = require("nvim-agent.agent").list(cwd)
 					if #agents == 0 then
 						vim.notify("nvim-agent: no agents defined — create one first", vim.log.levels.INFO)
 						add_or_finish()
@@ -1176,8 +1177,8 @@ end
 --- List all agent definitions in the workspace definition directory.
 function M.agent_list_ui()
 	local cwd = vim.fn.getcwd()
-	local workspace_mod = require("nvim-agent.workspace")
-	local agents = workspace_mod.agent_list(cwd)
+	local agent_mod = require("nvim-agent.agent")
+	local agents = agent_mod.list(cwd)
 	if #agents == 0 then
 		vim.notify("nvim-agent: no agents defined in workspace", vim.log.levels.INFO)
 		return
@@ -1194,9 +1195,9 @@ end
 function M.agent_remove()
 	local ui = require("nvim-agent.ui")
 	local cwd = vim.fn.getcwd()
-	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 	local session_mod = require("nvim-agent.session")
-	local agents = workspace_mod.agent_list(cwd)
+	local agents = agent_mod.list(cwd)
 	if #agents == 0 then
 		vim.notify("nvim-agent: no agents defined in workspace", vim.log.levels.INFO)
 		return
@@ -1213,7 +1214,7 @@ function M.agent_remove()
 			if sess then
 				session_mod.close(sess.id)
 			end
-			workspace_mod.agent_delete(name, cwd)
+			agent_mod.delete(name, cwd)
 		end
 	end)
 end
@@ -1226,6 +1227,7 @@ function M.agent_new_interactive(callback)
 	local ui = require("nvim-agent.ui")
 	local cwd = vim.fn.getcwd()
 	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 
 	if not workspace_mod.has_workspace(cwd) then
 		vim.notify("nvim-agent: no workspace initialized — run 'NvimAgent workspace init' first", vim.log.levels.WARN)
@@ -1243,7 +1245,7 @@ function M.agent_new_interactive(callback)
 			return
 		end
 
-		if not workspace_mod.agent_create(agent_name, cwd) then
+		if not agent_mod.create(agent_name, cwd) then
 			if callback then
 				callback(nil)
 			end
@@ -1296,6 +1298,7 @@ end
 function M.spawn_agent_noninteractive(agent_name, system_prompt, role, user_notes)
 	local cwd = vim.fn.getcwd()
 	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 	local session_mod = require("nvim-agent.session")
 	local flavor_mod = require("nvim-agent.flavor")
 
@@ -1309,12 +1312,12 @@ function M.spawn_agent_noninteractive(agent_name, system_prompt, role, user_note
 	end
 
 	-- Create agent definition directory
-	if not workspace_mod.agent_create(agent_name, cwd) then
+	if not agent_mod.create(agent_name, cwd) then
 		return { success = false, error = "failed to create agent definition for '" .. agent_name .. "'" }
 	end
 
 	-- Write context files to the agent definition directory
-	local def_dir = workspace_mod.agent_content_dir(agent_name, cwd)
+	local def_dir = agent_mod.content_dir(agent_name, cwd)
 	if not def_dir then
 		return { success = false, error = "failed to get agent content dir" }
 	end
@@ -1350,7 +1353,7 @@ function M.spawn_agent_noninteractive(agent_name, system_prompt, role, user_note
 	end
 
 	-- Load agent definition content into session active_dir
-	workspace_mod.agent_load_content(agent_name, sess.active_dir, cwd)
+	agent_mod.load_content(agent_name, sess.active_dir, cwd)
 	flavor_mod.write_meta(agent_name, nil, sess.active_dir)
 
 	-- Write initial status file for peer discovery
@@ -1380,6 +1383,7 @@ end
 function M.agent_save_current()
 	local cwd = vim.fn.getcwd()
 	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 	if not workspace_mod.has_workspace(cwd) then
 		vim.notify("nvim-agent: no workspace initialized — run 'NvimAgent workspace init' first", vim.log.levels.WARN)
 		return
@@ -1391,8 +1395,8 @@ function M.agent_save_current()
 		return
 	end
 
-	local dir = workspace_mod.agent_content_dir(sess.name, cwd)
-	workspace_mod.agent_save_content(sess.name, sess.active_dir, cwd)
+	local dir = agent_mod.content_dir(sess.name, cwd)
+	agent_mod.save_content(sess.name, sess.active_dir, cwd)
 	vim.notify(string.format("nvim-agent: agent '%s' saved to %s/", sess.name, dir or "?"), vim.log.levels.INFO)
 end
 
@@ -1402,8 +1406,8 @@ end
 
 --- List all available agent templates.
 function M.template_list_ui()
-	local workspace_mod = require("nvim-agent.workspace")
-	local templates = workspace_mod.template_list()
+	local agent_mod = require("nvim-agent.agent")
+	local templates = agent_mod.template_list()
 	if #templates == 0 then
 		vim.notify("nvim-agent: no agent templates defined", vim.log.levels.INFO)
 		return
@@ -1419,10 +1423,10 @@ end
 function M.template_create_ui()
 	local ui = require("nvim-agent.ui")
 	local cwd = vim.fn.getcwd()
-	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 
 	-- Offer to create from an existing agent or from scratch
-	local agents = workspace_mod.agent_list(cwd)
+	local agents = agent_mod.list(cwd)
 	if #agents == 0 then
 		vim.notify("nvim-agent: no agents to create template from", vim.log.levels.INFO)
 		return
@@ -1438,14 +1442,14 @@ function M.template_create_ui()
 			return
 		end
 		local agent_name = agents[idx].name
-		local source_dir = workspace_mod.agent_content_dir(agent_name, cwd)
+		local source_dir = agent_mod.content_dir(agent_name, cwd)
 		if not source_dir then
 			return
 		end
 
 		ui.input({ prompt = "", title = "Template name (default: " .. agent_name .. ")" }, function(name)
 			name = (name and name ~= "") and name or agent_name
-			workspace_mod.template_create(name, source_dir)
+			agent_mod.template_create(name, source_dir)
 		end)
 	end)
 end
@@ -1453,15 +1457,15 @@ end
 --- Pick and delete an agent template.
 function M.template_remove_ui()
 	local ui = require("nvim-agent.ui")
-	local workspace_mod = require("nvim-agent.workspace")
-	local templates = workspace_mod.template_list()
+	local agent_mod = require("nvim-agent.agent")
+	local templates = agent_mod.template_list()
 	if #templates == 0 then
 		vim.notify("nvim-agent: no agent templates defined", vim.log.levels.INFO)
 		return
 	end
 	ui.select(templates, { prompt = "Remove template", width = 70 }, function(choice)
 		if choice then
-			workspace_mod.template_delete(choice, vim.fn.getcwd())
+			agent_mod.template_delete(choice, vim.fn.getcwd())
 		end
 	end)
 end
@@ -1470,15 +1474,15 @@ end
 function M.agent_set_template_ui()
 	local ui = require("nvim-agent.ui")
 	local cwd = vim.fn.getcwd()
-	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 
-	local agents = workspace_mod.agent_list(cwd)
+	local agents = agent_mod.list(cwd)
 	if #agents == 0 then
 		vim.notify("nvim-agent: no agents defined", vim.log.levels.INFO)
 		return
 	end
 
-	local templates = workspace_mod.template_list()
+	local templates = agent_mod.template_list()
 	if #templates == 0 then
 		vim.notify("nvim-agent: no templates available — create one first", vim.log.levels.INFO)
 		return
@@ -1486,7 +1490,7 @@ function M.agent_set_template_ui()
 
 	local agent_options = {}
 	for _, a in ipairs(agents) do
-		local tmpl = workspace_mod.agent_get_template(a.name, cwd)
+		local tmpl = agent_mod.get_template(a.name, cwd)
 		local hint = tmpl and ("  [template: " .. tmpl .. "]") or ""
 		table.insert(agent_options, a.name .. hint)
 	end
@@ -1509,11 +1513,11 @@ function M.agent_set_template_ui()
 			end
 			if tidx == 1 then
 				-- Remove template link
-				workspace_mod.agent_set_template(agent_name, nil, cwd)
+				agent_mod.set_template(agent_name, nil, cwd)
 				vim.notify("nvim-agent: template unlinked from '" .. agent_name .. "'", vim.log.levels.INFO)
 			else
 				local tmpl_name = templates[tidx - 1]
-				workspace_mod.agent_set_template(agent_name, tmpl_name, cwd)
+				agent_mod.set_template(agent_name, tmpl_name, cwd)
 				vim.notify(
 					string.format("nvim-agent: agent '%s' linked to template '%s'", agent_name, tmpl_name),
 					vim.log.levels.INFO
@@ -1542,13 +1546,14 @@ function M.edit_agent_file(filename)
 	local ui = require("nvim-agent.ui")
 	local cwd = vim.fn.getcwd()
 	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 
 	if not workspace_mod.has_workspace(cwd) then
 		vim.notify("nvim-agent: no workspace initialized", vim.log.levels.WARN)
 		return
 	end
 
-	local agents = workspace_mod.agent_list(cwd)
+	local agents = agent_mod.list(cwd)
 	if #agents == 0 then
 		vim.notify("nvim-agent: no agents defined in workspace", vim.log.levels.WARN)
 		return
@@ -1563,7 +1568,7 @@ function M.edit_agent_file(filename)
 		if not name then
 			return
 		end
-		local dir = workspace_mod.agent_content_dir(name, cwd)
+		local dir = agent_mod.content_dir(name, cwd)
 		if not dir then
 			return
 		end
@@ -1625,9 +1630,10 @@ function M.graceful_quit()
 		-- Save workspace state for all sessions before exit.
 		local cwd = vim.fn.getcwd()
 		local workspace_mod = require("nvim-agent.workspace")
+		local agent_mod = require("nvim-agent.agent")
 		if workspace_mod.has_workspace(cwd) then
 			for _, sess in ipairs(sessions) do
-				pcall(workspace_mod.agent_save_content, sess.name, sess.active_dir, cwd)
+				pcall(agent_mod.save_content, sess.name, sess.active_dir, cwd)
 			end
 			vim.notify("nvim-agent: workspace state saved", vim.log.levels.INFO)
 		end
@@ -1742,11 +1748,12 @@ end
 function M.history_view_workspace()
 	local cwd = vim.fn.getcwd()
 	local workspace_mod = require("nvim-agent.workspace")
+	local agent_mod = require("nvim-agent.agent")
 	if not workspace_mod.has_workspace(cwd) then
 		vim.notify("nvim-agent: no workspace initialized", vim.log.levels.WARN)
 		return
 	end
-	local agents = workspace_mod.agent_list(cwd)
+	local agents = agent_mod.list(cwd)
 	if #agents == 0 then
 		vim.notify("nvim-agent: no agents defined in workspace", vim.log.levels.INFO)
 		return

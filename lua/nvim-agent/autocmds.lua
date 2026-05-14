@@ -56,7 +56,9 @@ function M.register()
 		group = group,
 		callback = function()
 			local ok, session_mod = pcall(require, "nvim-agent.session")
-			if not ok then return end
+			if not ok then
+				return
+			end
 			local running = {}
 			for _, sess in ipairs(session_mod.list()) do
 				if sess.jobid then
@@ -91,10 +93,11 @@ function M.register()
 			if ok then
 				local cwd = vim.fn.getcwd()
 				local ok_ws, workspace_mod = pcall(require, "nvim-agent.workspace")
+				local ok_agent, agent_mod = pcall(require, "nvim-agent.agent")
 				for _, sess in ipairs(session_mod.list()) do
 					-- Persist active_dir → workspace def dir for any workspace session.
-					if ok_ws and workspace_mod.has_workspace(cwd) then
-						pcall(workspace_mod.agent_save_content, sess.name, sess.active_dir, cwd)
+					if ok_ws and ok_agent and workspace_mod.has_workspace(cwd) then
+						pcall(agent_mod.save_content, sess.name, sess.active_dir, cwd)
 					end
 					require("nvim-agent.terminal").cleanup(sess.id)
 				end
@@ -129,7 +132,9 @@ function M.register()
 		30000,
 		vim.schedule_wrap(function()
 			local ok, session_mod = pcall(require, "nvim-agent.session")
-			if not ok then return end
+			if not ok then
+				return
+			end
 
 			local cwd = vim.fn.getcwd()
 			local trigger_dir = cwd .. "/.nvim-agent/triggers"
@@ -161,14 +166,10 @@ function M.register()
 						if msg_stat and (msg_stat.size or 0) > 0 and msg_stat.mtime then
 							msg_mtime = (msg_stat.mtime.sec or 0) * 1e9 + (msg_stat.mtime.nsec or 0)
 						end
-						local has_new_messages = msg_mtime ~= nil
-							and msg_mtime ~= M._handled_msg_mtime[sess.id]
+						local has_new_messages = msg_mtime ~= nil and msg_mtime ~= M._handled_msg_mtime[sess.id]
 
 						if has_trigger or has_new_messages then
-							terminal.send(
-								sess.id,
-								"You have pending messages or tasks. Please continue your work.\r"
-							)
+							terminal.send(sess.id, "You have pending messages or tasks. Please continue your work.\r")
 							if has_trigger then
 								-- Lock the trigger file: an MCP-side trigger_agent
 								-- may be appending right now; without the lock our
@@ -180,10 +181,17 @@ function M.register()
 								-- still has the message in its mailbox).
 								local ok_lock, filelock = pcall(require, "nvim-agent.mcp.filelock")
 								local got = ok_lock
-									and filelock.acquire(trigger_file, { agent = "nvim-autocmd", retries = 1, delay_ms = 50 })
+									and filelock.acquire(
+										trigger_file,
+										{ agent = "nvim-autocmd", retries = 1, delay_ms = 50 }
+									)
 								local f = io.open(trigger_file, "w")
-								if f then f:close() end
-								if got then filelock.release(trigger_file) end
+								if f then
+									f:close()
+								end
+								if got then
+									filelock.release(trigger_file)
+								end
 							end
 							if has_new_messages then
 								M._handled_msg_mtime[sess.id] = msg_mtime
