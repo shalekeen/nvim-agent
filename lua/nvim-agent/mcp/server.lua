@@ -108,6 +108,22 @@ local function handle_tools_call(id, params)
 	end
 end
 
+-- Handle a JSON-RPC 2.0 notification — a request WITHOUT an `id` field.
+-- Per §4.1 of the spec: "The Server MUST NOT reply to a Notification."
+-- So no send_result / send_error from this path, even for unknown methods.
+--
+-- MCP clients use this for status pings the server doesn't need to confirm:
+--   notifications/initialized — sent right after the initialize round-trip
+--                                so the server knows the client is ready
+--   notifications/cancelled   — abort an in-flight request
+--   notifications/progress    — streaming progress updates
+--
+-- Today we accept all notifications silently. If we ever need to react to
+-- one (e.g. cancel a pending tool call), dispatch on request.method here.
+local function handle_notification(request)
+	local _ = request.method
+end
+
 -- Route a request to the appropriate handler.
 local function handle_request(request)
 	-- Be permissive about JSON-RPC version. The MCP spec mandates 2.0, and
@@ -123,6 +139,15 @@ local function handle_request(request)
 	-- dispatch when we tried to index .method.
 	if type(request) ~= "table" then
 		send_error(nil, ERROR_CODES.INVALID_REQUEST, "Request must be a JSON object")
+		return
+	end
+
+	-- Notification: absent `id` key. Per spec we MUST NOT respond, even on
+	-- unknown methods. Note vim.json.decode represents EXPLICIT `null` as
+	-- vim.NIL (not nil), and the spec considers that a regular request with
+	-- a null id — not a notification. So we test only for `nil` here.
+	if request.id == nil then
+		handle_notification(request)
 		return
 	end
 
