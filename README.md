@@ -2,6 +2,8 @@
 
 A Neovim plugin to manage and interact with one or more terminal-based coding agents (Claude Code, etc.) inside Neovim. Each agent runs in its own terminal split, gets its own session directory, and is wired up to an MCP server that lets the agent control your buffers in real time.
 
+![nvim-agent multi-agent demo](docs/nvim-agent-multiagent-demo.gif)
+
 ## Features
 
 - Run one or more coding agents side-by-side in dedicated terminal splits
