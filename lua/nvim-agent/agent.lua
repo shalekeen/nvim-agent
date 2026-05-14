@@ -365,4 +365,26 @@ function M.get_template(agent_name, cwd)
 	return meta and meta.template
 end
 
+--- Ensure `<def_dir>/.flavor_meta.json` exists for `agent_name`. If missing,
+--- writes a default `{ flavor = agent_name, checkpoint = nil }` so the next
+--- workspace_launch can skip the flavor picker (its gate is the presence of
+--- that file). No-op if the file already exists or the workspace isn't
+--- initialized.
+---
+--- This is the symmetric counterpart to flavor.write_meta but lives on the
+--- agent module because the marker conceptually belongs to the agent
+--- definition, not to any particular session's active_dir.
+--- @param agent_name string
+--- @param cwd string|nil
+function M.ensure_flavor_meta(agent_name, cwd)
+	local def_dir = M.content_dir(agent_name, cwd)
+	if not def_dir then
+		return
+	end
+	if vim.fn.filereadable(def_dir .. "/.flavor_meta.json") == 1 then
+		return
+	end
+	require("nvim-agent.flavor").write_meta(agent_name, nil, def_dir)
+end
+
 return M

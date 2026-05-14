@@ -459,8 +459,8 @@ end
 --- @param cwd string
 local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
 	local agent_mod = require("nvim-agent.agent")
+	local flavor_mod = require("nvim-agent.flavor")
 	if sel.type == "global" then
-		local flavor_mod = require("nvim-agent.flavor")
 		local checkpoint_mod = require("nvim-agent.flavor.checkpoint")
 		if sel.checkpoint then
 			checkpoint_mod.load(sel.flavor, sel.checkpoint, active_dir)
@@ -503,17 +503,28 @@ local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
 		agent_mod.save_content(agent_name, active_dir, cwd)
 	else
 		-- def_only: the agent definition directory in cwd is the source of truth.
-		-- Load it into active_dir, then label the session with the agent's name
-		-- via .flavor_meta.json. We deliberately do NOT plant a global flavor at
-		-- ~/.nvim-agent/<agent_name>/ — that pollutes flavor.list() with names
-		-- of every workspace agent the user has ever launched.
-		local flavor_mod = require("nvim-agent.flavor")
+		-- Load it into active_dir, then (below) label both dirs via
+		-- .flavor_meta.json so the next workspace_launch skips the picker.
+		-- We deliberately do NOT plant a global flavor at ~/.nvim-agent/<agent_name>/
+		-- — that would pollute flavor.list() with names of every workspace agent
+		-- the user has ever launched.
 		agent_mod.load_content(agent_name, active_dir, cwd)
 	end
-end
 
---- Launch all agents in a workspace. Reads agent definitions from the project's
---- definition directory (<def_dir>/agents/<name>/) and starts a session per agent.
+	-- ── Ensure .flavor_meta.json exists in BOTH active_dir and def_dir ──
+	-- workspace_launch checks for the def_dir copy to decide whether to skip
+	-- ── Ensure .flavor_meta.json exists in BOTH active_dir and def_dir ──
+	-- workspace_launch checks for the def_dir copy to decide whether to skip
+	-- the picker; the active_dir copy drives session UIs (statusline, list
+	-- pickers). For sel.type == "global" both are already populated above.
+	-- For the other branches we plant the marker ourselves, using the
+	-- agent's own name as the flavor label.
+	agent_mod.ensure_flavor_meta(agent_name, cwd)
+	local def_dir = agent_mod.content_dir(agent_name, cwd)
+	if def_dir and vim.fn.filereadable(active_dir .. "/.flavor_meta.json") ~= 1 then
+		flavor_mod.write_meta(agent_name, nil, active_dir)
+	end
+end
 --- Agents with no stored .flavor_meta.json are shown a flavor picker before launch.
 --- Agents are processed sequentially so pickers don't overlap.
 --- @param workspace table  { name, agents: [{name, role}] }

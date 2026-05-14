@@ -308,8 +308,50 @@ assert_eq("create returns false with no workspace", agent.create("X", unconfigur
 -- delete on a missing-workspace cwd: dir lookup returns nil → returns false,
 -- and does not call workspace.remove_agent_from_workspaces.
 assert_eq("delete returns false with no workspace", agent.delete("X", unconfigured_cwd), false)
+check(
+	"ensure_flavor_meta is a no-op when there's no workspace",
+	(function()
+		local ok = pcall(agent.ensure_flavor_meta, "X", unconfigured_cwd)
+		return ok
+	end)()
+)
 
 -- ---------------------------------------------------------------------------
+-- 6. ensure_flavor_meta — the regression test for "workspace re-prompts
+-- the picker every launch" bug. workspace_launch checks
+-- <def_dir>/<agent>/.flavor_meta.json to decide whether to skip the picker.
+-- This helper plants that marker for non-global-flavor launch paths.
+-- ---------------------------------------------------------------------------
+
+agent.create("Lead", cwd)
+local lead_meta = agent.content_dir("Lead", cwd) .. "/.flavor_meta.json"
+check("setup: Lead has no .flavor_meta.json yet", vim.fn.filereadable(lead_meta) == 0)
+
+agent.ensure_flavor_meta("Lead", cwd)
+check("ensure_flavor_meta creates the marker", vim.fn.filereadable(lead_meta) == 1)
+
+-- Content shape: { flavor = "<agent>", checkpoint = nil }
+local meta_raw = io.open(lead_meta, "r"):read("*a")
+check(
+	"ensure_flavor_meta writes flavor = agent_name",
+	meta_raw:find('"flavor":"Lead"', 1, true) ~= nil,
+	"got " .. meta_raw
+)
+
+-- Idempotence: a SECOND call must NOT clobber pre-existing meta. This
+-- guards against the helper accidentally overwriting a global flavor link
+-- that was set by sel.type == "global".
+local handle = io.open(lead_meta, "w")
+handle:write('{"flavor":"some-global-flavor","checkpoint":"v2"}')
+handle:close()
+agent.ensure_flavor_meta("Lead", cwd)
+local preserved = io.open(lead_meta, "r"):read("*a")
+assert_eq(
+	"ensure_flavor_meta does NOT overwrite existing meta",
+	preserved,
+	'{"flavor":"some-global-flavor","checkpoint":"v2"}'
+)
+
 -- Cleanup + summary.
 -- ---------------------------------------------------------------------------
 
