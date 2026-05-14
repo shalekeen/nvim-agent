@@ -338,7 +338,7 @@ nvim-agent/
 ├── context/init.lua         # compose_system_prompt — three-layer composition
 ├── flavor/                  # Flavor library and last-used-flavor persistence
 └── mcp/
-    ├── server.lua           # JSON-RPC 2.0 over stdio; spawned by the CLI
+    │   ├── server.lua           # MCP server (JSON-RPC 2.0 framing on responses; permissive on incoming version field)
     ├── tools.lua            # MCP tool implementations
     ├── nvim_rpc.lua         # Shell-based Neovim RPC wrapper
     └── filelock.lua         # mkdir-based cross-process locking

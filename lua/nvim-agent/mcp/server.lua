@@ -1,11 +1,13 @@
 #!/usr/bin/env luajit
 -- MCP Server for Neovim Control
--- Implements JSON-RPC 2.0 over stdio
-
+-- Implements MCP over stdio. Responses use JSON-RPC 2.0 framing (per the MCP
+-- spec), but the request side is permissive: clients that omit the
+-- "jsonrpc" field or send a different version are accepted. See
+-- handle_request below for the rationale.
 -- Set up package path to find local modules
 local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)")
 if script_dir then
-  package.path = script_dir .. "?.lua;" .. package.path
+	package.path = script_dir .. "?.lua;" .. package.path
 end
 
 local json = vim.json
@@ -13,151 +15,161 @@ local tools = require("tools")
 
 -- JSON-RPC error codes
 local ERROR_CODES = {
-  PARSE_ERROR = -32700,
-  INVALID_REQUEST = -32600,
-  METHOD_NOT_FOUND = -32601,
-  INVALID_PARAMS = -32602,
-  INTERNAL_ERROR = -32603
+	PARSE_ERROR = -32700,
+	INVALID_REQUEST = -32600,
+	METHOD_NOT_FOUND = -32601,
+	INVALID_PARAMS = -32602,
+	INTERNAL_ERROR = -32603,
 }
 
 -- Server state
 local server_info = {
-  name = "nvim-agent-mcp",
-  version = "1.0.0"
+	name = "nvim-agent-mcp",
+	version = "1.0.0",
 }
 
 -- Write a JSON-RPC response to stdout
 local function write_response(response)
-  local encoded = json.encode(response)
-  if not encoded then
-    io.stderr:write("ERROR: Failed to encode response\n")
-    return
-  end
-  io.write(encoded .. "\n")
-  io.flush()
+	local encoded = json.encode(response)
+	if not encoded then
+		io.stderr:write("ERROR: Failed to encode response\n")
+		return
+	end
+	io.write(encoded .. "\n")
+	io.flush()
 end
 
 -- Send a JSON-RPC error response
 local function send_error(id, code, message, data)
-  write_response({
-    jsonrpc = "2.0",
-    id = id,
-    error = {
-      code = code,
-      message = message,
-      data = data
-    }
-  })
+	write_response({
+		jsonrpc = "2.0",
+		id = id,
+		error = {
+			code = code,
+			message = message,
+			data = data,
+		},
+	})
 end
 
 -- Send a JSON-RPC success response
 local function send_result(id, result)
-  write_response({
-    jsonrpc = "2.0",
-    id = id,
-    result = result
-  })
+	write_response({
+		jsonrpc = "2.0",
+		id = id,
+		result = result,
+	})
 end
 
 -- Handle initialize method
 local function handle_initialize(id, params)
-  -- vim.empty_dict() ensures `tools` is encoded as {} not [].
-  local capabilities = {
-    tools = vim.empty_dict()
-  }
+	-- vim.empty_dict() ensures `tools` is encoded as {} not [].
+	local capabilities = {
+		tools = vim.empty_dict(),
+	}
 
-  send_result(id, {
-    protocolVersion = "2024-11-05",
-    serverInfo = server_info,
-    capabilities = capabilities
-  })
+	send_result(id, {
+		protocolVersion = "2024-11-05",
+		serverInfo = server_info,
+		capabilities = capabilities,
+	})
 end
 
 -- Handle tools/list method
 local function handle_tools_list(id, params)
-  local tool_list = tools.list()
-  send_result(id, {
-    tools = tool_list
-  })
+	local tool_list = tools.list()
+	send_result(id, {
+		tools = tool_list,
+	})
 end
 
 -- Handle tools/call method
 local function handle_tools_call(id, params)
-  if not params or not params.name then
-    send_error(id, ERROR_CODES.INVALID_PARAMS, "Missing tool name")
-    return
-  end
+	if not params or not params.name then
+		send_error(id, ERROR_CODES.INVALID_PARAMS, "Missing tool name")
+		return
+	end
 
-  local tool_name = params.name
-  local arguments = params.arguments or {}
+	local tool_name = params.name
+	local arguments = params.arguments or {}
 
-  -- Execute the tool
-  local content, is_error = tools.execute(tool_name, arguments)
+	-- Execute the tool
+	local content, is_error = tools.execute(tool_name, arguments)
 
-  if is_error then
-    send_result(id, {
-      content = content,
-      isError = true
-    })
-  else
-    send_result(id, {
-      content = content
-    })
-  end
+	if is_error then
+		send_result(id, {
+			content = content,
+			isError = true,
+		})
+	else
+		send_result(id, {
+			content = content,
+		})
+	end
 end
 
--- Route a request to the appropriate handler
+-- Route a request to the appropriate handler.
 local function handle_request(request)
-  -- Validate JSON-RPC 2.0
-  if request.jsonrpc ~= "2.0" then
-    send_error(request.id, ERROR_CODES.INVALID_REQUEST, "Invalid JSON-RPC version")
-    return
-  end
+	-- Be permissive about JSON-RPC version. The MCP spec mandates 2.0, and
+	-- compliant clients (Claude Code etc.) always send it — but rejecting
+	-- requests that lack the field gives nothing in exchange for breaking
+	-- custom test scripts, debugging tools, and third-party adapters that
+	-- want to drive the server directly. We still EMIT `jsonrpc = "2.0"`
+	-- in every response (see send_error / send_result), so spec-compliant
+	-- clients receive correctly-framed responses regardless.
+	--
+	-- The only validation we keep is "the parsed JSON is a table" — without
+	-- it, a stray primitive like `42` on stdin would crash inside the
+	-- dispatch when we tried to index .method.
+	if type(request) ~= "table" then
+		send_error(nil, ERROR_CODES.INVALID_REQUEST, "Request must be a JSON object")
+		return
+	end
 
-  local method = request.method
-  local id = request.id
-  local params = request.params
+	local method = request.method
+	local id = request.id
+	local params = request.params
 
-  if method == "initialize" then
-    handle_initialize(id, params)
-  elseif method == "tools/list" then
-    handle_tools_list(id, params)
-  elseif method == "tools/call" then
-    handle_tools_call(id, params)
-  else
-    send_error(id, ERROR_CODES.METHOD_NOT_FOUND, "Method not found: " .. tostring(method))
-  end
+	if method == "initialize" then
+		handle_initialize(id, params)
+	elseif method == "tools/list" then
+		handle_tools_list(id, params)
+	elseif method == "tools/call" then
+		handle_tools_call(id, params)
+	else
+		send_error(id, ERROR_CODES.METHOD_NOT_FOUND, "Method not found: " .. tostring(method))
+	end
 end
 
 -- Main server loop
 local function main()
-  -- Locate the parent Neovim's RPC socket. Falls back to NVIM_LISTEN_ADDRESS
-  -- for backward compatibility, but the supported var is NVIM_AGENT_NVIM_ADDR
-  -- because NVIM_LISTEN_ADDRESS is intercepted by `nvim -l` itself.
-  local nvim_addr = os.getenv("NVIM_AGENT_NVIM_ADDR") or os.getenv("NVIM_LISTEN_ADDRESS")
-  if not nvim_addr or nvim_addr == "" then
-    -- Silent fail - just exit without sending anything
-    -- Can't send error without a request ID
-    os.exit(1)
-  end
+	-- Locate the parent Neovim's RPC socket. Falls back to NVIM_LISTEN_ADDRESS
+	-- for backward compatibility, but the supported var is NVIM_AGENT_NVIM_ADDR
+	-- because NVIM_LISTEN_ADDRESS is intercepted by `nvim -l` itself.
+	local nvim_addr = os.getenv("NVIM_AGENT_NVIM_ADDR") or os.getenv("NVIM_LISTEN_ADDRESS")
+	if not nvim_addr or nvim_addr == "" then
+		-- Silent fail - just exit without sending anything
+		-- Can't send error without a request ID
+		os.exit(1)
+	end
 
-  -- Don't write to stderr - it causes Claude Code to think the server failed
-  -- MCP protocol uses only stdin/stdout for JSON-RPC communication
+	-- Don't write to stderr - it causes Claude Code to think the server failed
+	-- MCP protocol uses only stdin/stdout for JSON-RPC communication
 
-  -- Read and process requests line by line
-  for line in io.lines() do
-    if line and line ~= "" then
-      -- Parse JSON request. vim.json.decode raises on malformed input;
-      -- pcall to skip silently (we can't send an error without a valid request id).
-      local ok_d, request = pcall(json.decode, line)
-      if ok_d then
-        local ok, error_msg = pcall(handle_request, request)
-        if not ok then
-          send_error(request.id, ERROR_CODES.INTERNAL_ERROR, "Internal error: " .. tostring(error_msg))
-        end
-      end
-    end
-  end
+	-- Read and process requests line by line
+	for line in io.lines() do
+		if line and line ~= "" then
+			-- Parse JSON request. vim.json.decode raises on malformed input;
+			-- pcall to skip silently (we can't send an error without a valid request id).
+			local ok_d, request = pcall(json.decode, line)
+			if ok_d then
+				local ok, error_msg = pcall(handle_request, request)
+				if not ok then
+					send_error(request.id, ERROR_CODES.INTERNAL_ERROR, "Internal error: " .. tostring(error_msg))
+				end
+			end
+		end
+	end
 end
 
 -- Run the server
