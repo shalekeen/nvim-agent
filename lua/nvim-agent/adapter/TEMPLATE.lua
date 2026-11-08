@@ -157,11 +157,11 @@ function M:setup_session_mcp(session)
 					NVIM_AGENT_NVIM_ADDR = nvim_address,
 					NVIM_AGENT_ACTIVE_DIR = session.active_dir,
 					NVIM_AGENT_PROCESS_DIR = session.process_dir,
-					NVIM_AGENT_CWD = vim.fn.getcwd(),
+					NVIM_AGENT_CWD = session.cwd,
 					-- Per-instance peer state root. Forward it verbatim so the
 					-- MCP server and hook never fall back to a shared location.
 					NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
-					NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd()),
+					NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(session.cwd),
 				},
 			},
 		},

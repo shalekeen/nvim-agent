@@ -34,10 +34,11 @@ local function shell_escape(s)
 end
 
 local function get_nvim_address()
-	-- Prefer NVIM_AGENT_NVIM_ADDR; fall back to NVIM_LISTEN_ADDRESS for
-	-- backward compatibility. The new var exists because `nvim -l` (used to
-	-- run this script) hijacks NVIM_LISTEN_ADDRESS for its own server bind.
-	local addr = os.getenv("NVIM_AGENT_NVIM_ADDR") or os.getenv("NVIM_LISTEN_ADDRESS")
+	-- Only the address the parent Neovim handed us. No fallback to
+	-- NVIM_LISTEN_ADDRESS or $NVIM: those may name a DIFFERENT Neovim (the
+	-- one whose terminal this process happens to run in), and talking to it
+	-- would leak buffers, status and wakeups across instances. Fail closed.
+	local addr = os.getenv("NVIM_AGENT_NVIM_ADDR")
 	if not addr or addr == "" then
 		return nil, "NVIM_AGENT_NVIM_ADDR not set"
 	end
