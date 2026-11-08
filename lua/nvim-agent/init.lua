@@ -181,10 +181,16 @@ end
 function M.team_status()
 	launcher().team_status()
 end
---- Arrange every running agent in a grid / hide every agent window.
-function M.open_all()
-	require("nvim-agent.terminal").show_all()
+--- Arrange every running agent in a uniform grid (≤ terminal.grid_columns
+--- per row, default 4), re-flowing in place on repeat / hide every agent
+--- window.
+function M.arrange_all()
+	local n = require("nvim-agent.terminal").arrange_all()
+	if n > 0 then
+		vim.notify(string.format("nvim-agent: arranged %d agent%s", n, n == 1 and "" or "s"), vim.log.levels.INFO)
+	end
 end
+M.open_all = M.arrange_all
 function M.close_all()
 	local n = require("nvim-agent.terminal").hide_all()
 	vim.notify(string.format("nvim-agent: hid %d agent window%s", n, n == 1 and "" or "s"), vim.log.levels.INFO)

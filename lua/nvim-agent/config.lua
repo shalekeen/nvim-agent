@@ -23,6 +23,10 @@ M.defaults = {
 		-- named like a native terminal, term://<cwd>//<pid>:<title>, so barbar,
 		-- bufferline.nvim and the built-in tabline all display just the title.
 		title = "{name}",
+		-- Maximum agents per row when arranging all agents in a grid
+		-- (:NvimAgent arrange, <leader>a=). Rows are added as needed and every
+		-- window is equalised.
+		grid_columns = 4,
 	},
 	-- Layer 1 of the composed system prompt: the CLI-neutral runtime
 	-- contract from nvim-agent itself (directory layout, context-file

@@ -67,6 +67,7 @@ return {
 | `auto_write_context` | `true` | Refresh `ephemeral.json` when switching to an agent buffer. |
 | `terminal.split_direction` | `"vertical"` | `"vertical"` or `"horizontal"`. |
 | `terminal.split_size` | `0.4` | Fraction of the screen the agent split takes. |
+| `terminal.grid_columns` | `4` | Maximum agents per row when arranging all agents in a grid (`:NvimAgent arrange`, `<leader>a=`). |
 | `terminal.title` | `"{name}"` | Tab title of an agent terminal in barbar or any bufferline. Placeholders: `{name}` (session), `{agent}`, `{workspace}`. Buffers are named like native terminals, `term://<cwd>//<pid>:<title>`, so only the title is displayed. |
 | `nvim_agent_preamble` | (built-in) | Layer 1 of the composed system prompt — the CLI-neutral runtime contract from nvim-agent (directory layout, context-file catalogue, MCP tools, coordination rules). Always emitted first; cannot be removed by editing an agent. The CLI-specific part (how context is delivered, which native tools to avoid) is layer 1b and comes from the adapter. |
 | `default_system_prompt` | (built-in) | The `system_prompt.md` a newly defined agent starts with. Also the fallback when an agent's prompt is empty. |
@@ -142,7 +143,8 @@ Loading a workspace while another is live asks before stopping the running agent
 ```
 :NvimAgent                       " toggle current terminal, or open the startup picker
 :NvimAgent open | close | toggle
-:NvimAgent open all              " arrange every running agent in a grid (new tab)
+:NvimAgent arrange               " arrange every running agent in a uniform grid, ≤4 per row (re-flows in place on repeat)
+:NvimAgent open all              " same as arrange
 :NvimAgent close all             " hide every agent window (processes keep running)
 :NvimAgent status                " team overview: state, role, task, mail, overrides per member
 :NvimAgent send [name] [text]    " type a line into an agent's terminal
@@ -188,7 +190,7 @@ A `<leader>a` group is registered via which-key. The most used bindings:
 | --- | --- |
 | `<leader>a1` … `<leader>a9` | Jump to the nth agent (relaunches it if exited) |
 | `<leader>al` / `<leader>aL` | Switch agent (picker) / list sessions |
-| `<leader>aG` / `<leader>aH` | Show every running agent in a grid / hide all agent windows |
+| `<leader>a=` (or `<leader>aG`) / `<leader>aH` | Arrange every running agent in a uniform grid of at most 4 per row, re-flowing in place on repeat / hide all agent windows |
 | `<leader>ap` | Team status: state, role, current task, pending mail, overrides |
 | `<leader>am` | Type a message into an agent's terminal |
 | `<leader>ao` / `<leader>aT` | Open / toggle the current agent terminal |

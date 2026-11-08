@@ -93,14 +93,24 @@ local function scroll_to_bottom(bufnr, winnr, delay_ms)
 	end, delay_ms or 5000)
 end
 
---- Build an N-cell grid of windows (rows × cols) in a fresh tab and return
---- the windows in row-major order. Surplus cells are closed.
+--- The tab that holds the agent grid, once one has been built. Reused by
+--- arrange_all so repeated arranging never piles up tabs.
+M.grid_tab = nil
+
+local function grid_cols(cols)
+	return cols or (config.get().terminal or {}).grid_columns or 4
+end
+
+--- Build an N-cell grid of windows (≤ cols per row, rows added as needed)
+--- starting from the CURRENT window, which must be the only window in its
+--- tab. Returns the windows in row-major order; surplus cells are closed;
+--- all windows are equalised.
 --- @param n integer
 --- @param cols integer
 --- @return integer[] wins
-local function build_grid(n, cols)
+local function build_grid_here(n, cols)
+	cols = math.max(1, math.min(cols, n))
 	local rows = math.ceil(n / cols)
-	vim.cmd("tabnew")
 	local row_wins = { vim.api.nvim_get_current_win() }
 	for r = 2, rows do
 		vim.api.nvim_set_current_win(row_wins[r - 1])
@@ -119,14 +129,36 @@ local function build_grid(n, cols)
 			table.insert(wins, row[c])
 		end
 	end
-	vim.cmd("wincmd =")
 	for i = #wins, n + 1, -1 do
 		if vim.api.nvim_win_is_valid(wins[i]) then
 			vim.api.nvim_win_close(wins[i], true)
 		end
 		wins[i] = nil
 	end
+	vim.cmd("wincmd =")
 	return wins
+end
+
+--- Build the grid in a fresh tab and remember that tab as the agents tab.
+local function build_grid(n, cols)
+	vim.cmd("tabnew")
+	M.grid_tab = vim.api.nvim_get_current_tabpage()
+	return build_grid_here(n, cols)
+end
+
+--- True when every window in `tab` shows an agent terminal.
+local function tab_is_all_agents(tab)
+	local session_mod = require("nvim-agent.session")
+	local wins = vim.api.nvim_tabpage_list_wins(tab)
+	if #wins == 0 then
+		return false
+	end
+	for _, win in ipairs(wins) do
+		if not session_mod.find_by_bufnr(vim.api.nvim_win_get_buf(win)) then
+			return false
+		end
+	end
+	return true
 end
 
 --- Spawn the adapter CLI for `sess` inside the given window. Creates the
@@ -287,7 +319,7 @@ function M.open_grid(session_ids, cols)
 		return
 	end
 
-	local wins = build_grid(#sessions, cols)
+	local wins = build_grid(#sessions, grid_cols(cols))
 	for i, sess in ipairs(sessions) do
 		launch_session_in_window(sess, wins[i], adapter)
 	end
@@ -297,12 +329,15 @@ function M.open_grid(session_ids, cols)
 	end
 end
 
---- Arrange every RUNNING session's existing terminal buffer in a grid in a
---- fresh tab. Unlike open_grid this launches nothing; exited members are
---- skipped (relaunch them with restart).
+--- Arrange every RUNNING session's terminal in a uniform grid: at most
+--- `cols` (default config.terminal.grid_columns, 4) per row, rows added as
+--- needed, all windows equalised. Reuses the agents tab if there is one
+--- (or the current tab when it holds only agent windows), otherwise opens
+--- a new tab — so pressing it repeatedly re-flows in place. Launches
+--- nothing; exited members are skipped (relaunch them with restart).
 --- @param cols number|nil
---- @return integer  number of sessions shown
-function M.show_all(cols)
+--- @return integer  number of sessions arranged
+function M.arrange_all(cols)
 	local session_mod = require("nvim-agent.session")
 	local shown = {}
 	for _, sess in ipairs(session_mod.list()) do
@@ -311,10 +346,30 @@ function M.show_all(cols)
 		end
 	end
 	if #shown == 0 then
-		vim.notify("nvim-agent: no running agents to show", vim.log.levels.INFO)
+		vim.notify("nvim-agent: no running agents to arrange", vim.log.levels.INFO)
 		return 0
 	end
-	local wins = build_grid(#shown, cols or 4)
+
+	local tab = nil
+	if M.grid_tab and vim.api.nvim_tabpage_is_valid(M.grid_tab) then
+		tab = M.grid_tab
+	elseif tab_is_all_agents(vim.api.nvim_get_current_tabpage()) then
+		tab = vim.api.nvim_get_current_tabpage()
+	end
+
+	local wins
+	if tab then
+		vim.api.nvim_set_current_tabpage(tab)
+		vim.cmd("only")
+		M.grid_tab = tab
+		wins = build_grid_here(#shown, grid_cols(cols))
+	else
+		wins = build_grid(#shown, grid_cols(cols))
+	end
+
+	for _, sess in ipairs(session_mod.list()) do
+		sess.winnr = nil
+	end
 	for i, sess in ipairs(shown) do
 		vim.api.nvim_win_set_buf(wins[i], sess.bufnr)
 		sess.winnr = wins[i]
@@ -322,6 +377,9 @@ function M.show_all(cols)
 	vim.api.nvim_set_current_win(wins[1])
 	return #shown
 end
+
+--- Backwards-compatible alias.
+M.show_all = M.arrange_all
 
 --- Hide every window currently showing an agent terminal. Processes keep
 --- running. A tab that held only agent windows is closed.
@@ -337,6 +395,9 @@ function M.hide_all()
 				-- Last window in its tab: close the tab if there is another one.
 				if #vim.api.nvim_list_tabpages() > 1 then
 					local tab = vim.api.nvim_win_get_tabpage(win)
+					if tab == M.grid_tab then
+						M.grid_tab = nil
+					end
 					pcall(vim.api.nvim_set_current_tabpage, tab)
 					pcall(vim.cmd, "tabclose")
 				else
@@ -348,6 +409,11 @@ function M.hide_all()
 			end
 			hidden = hidden + 1
 		end
+	end
+	-- Closing the last window of a tab (when other tabs exist) closes the
+	-- tab itself, so the agents tab may have gone without our tabclose branch.
+	if M.grid_tab and not vim.api.nvim_tabpage_is_valid(M.grid_tab) then
+		M.grid_tab = nil
 	end
 	return hidden
 end

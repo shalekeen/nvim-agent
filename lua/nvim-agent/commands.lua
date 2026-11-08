@@ -13,6 +13,7 @@ local SUBCOMMANDS = {
 	"close",
 	"toggle",
 	"refresh",
+	"arrange",
 	"status",
 	"send",
 	"workspace",
@@ -156,7 +157,7 @@ local function dispatch(opts)
 
 	if sub == "open" then
 		if action == "all" then
-			agent.open_all()
+			agent.arrange_all()
 		else
 			agent.open()
 		end
@@ -170,6 +171,8 @@ local function dispatch(opts)
 		agent.toggle()
 	elseif sub == "refresh" then
 		agent.refresh_context()
+	elseif sub == "arrange" then
+		agent.arrange_all()
 	elseif sub == "status" then
 		agent.team_status()
 	elseif sub == "send" then

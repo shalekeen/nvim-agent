@@ -246,12 +246,28 @@ local jobs_before = {}
 for _, s in ipairs(S.list()) do
 	jobs_before[s.name] = s.jobid
 end
-local shown = T.show_all(4)
-check("show_all shows every running session", shown == 2, shown)
-check("show_all assigns windows", S.get_by_name("helper").winnr ~= nil and S.get_by_name("lib-agent").winnr ~= nil)
-check("show_all launches nothing new", S.get_by_name("helper").jobid == jobs_before["helper"] and S.get_by_name("lib-agent").jobid == jobs_before["lib-agent"])
+local tabs_before = #vim.api.nvim_list_tabpages()
+local shown = T.arrange_all(4)
+check("arrange_all arranges every running session", shown == 2, shown)
+check("arrange_all assigns windows", S.get_by_name("helper").winnr ~= nil and S.get_by_name("lib-agent").winnr ~= nil)
+check("arrange_all launches nothing new", S.get_by_name("helper").jobid == jobs_before["helper"] and S.get_by_name("lib-agent").jobid == jobs_before["lib-agent"])
+check("arrange_all opened one agents tab", #vim.api.nvim_list_tabpages() == tabs_before + 1 and T.grid_tab ~= nil)
+local grid_wins = vim.api.nvim_tabpage_list_wins(T.grid_tab)
+check("agents tab holds exactly the running sessions' windows", #grid_wins == 2)
+check("grid windows are equalised (same width)", math.abs(vim.api.nvim_win_get_width(grid_wins[1]) - vim.api.nvim_win_get_width(grid_wins[2])) <= 1)
+-- Repeat re-flows in place: no new tab.
+T.arrange_all(4)
+check("arrange_all reuses the agents tab on repeat", #vim.api.nvim_list_tabpages() == tabs_before + 1)
+check("still exactly the running sessions' windows after repeat", #vim.api.nvim_tabpage_list_wins(T.grid_tab) == 2)
+-- Column cap: with cols=1 the two agents stack into two rows (same width, half height).
+T.arrange_all(1)
+local stacked = vim.api.nvim_tabpage_list_wins(T.grid_tab)
+local r1, r2 = vim.api.nvim_win_get_position(stacked[1])[1], vim.api.nvim_win_get_position(stacked[2])[1]
+check("column cap respected (cols=1 → one per row, stacked vertically)", #stacked == 2 and vim.api.nvim_win_get_width(stacked[1]) == vim.api.nvim_win_get_width(stacked[2]) and r1 ~= r2, string.format("rows %s/%s", tostring(r1), tostring(r2)))
+check("show_all alias still works", T.show_all(4) == 2)
 local hidden = T.hide_all()
 check("hide_all hides at least the grid windows", hidden >= 2, hidden)
+check("hide_all forgets the agents tab once it is closed", T.grid_tab == nil)
 check("hide_all keeps processes running", S.is_running(S.get_by_name("helper")) and S.is_running(S.get_by_name("lib-agent")))
 check("hide_all clears winnr", S.get_by_name("helper").winnr == nil)
 
