@@ -81,7 +81,7 @@ Every session's system prompt is built from these layers, joined by blank lines.
 
 ### Statusline component
 
-`require("nvim-agent").statusline()` returns `Agent-<session>: <agent> @ <workspace>`, with an `(exited)` suffix when the agent's CLI is not running. It returns an empty string when there is no current session, so it's safe to drop into a global statusline:
+`require("nvim-agent").statusline()` returns `Agent-<session>: <agent> @ <workspace>`, with a `+` after the agent name when the session has workspace overrides and an `(exited)` suffix when the agent's CLI is not running. It returns an empty string when there is no current session, so it's safe to drop into a global statusline:
 
 ```lua
 vim.opt.statusline = "%f %m%r  %{%v:lua.require('nvim-agent').statusline()%}%=%y  %l:%c  %p%%"
@@ -99,7 +99,7 @@ vim.opt.statusline = "%f %m%r  %{%v:lua.require('nvim-agent').statusline()%}%=%y
 | `persistent_dirs.json` | Pinned code paths: `[{ "tag", "path", "description" }]`. |
 | `permissions.json` | Optional, adapter-specific tool permissions (see the adapter README). |
 
-There are no per-project overrides. If a project needs a variant of an agent, copy the agent under a new name with `:NvimAgent agent copy` and edit the copy. Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/agents/spawned/<name>/` and are listed in their own section so they don't crowd out your own; copy one to adopt it.
+Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/agents/spawned/<name>/` and are listed in their own section so they don't crowd out your own; copy one with `:NvimAgent agent copy` to adopt it. Copying is also how you make a permanently different variant of an agent. For project-specific tweaks you don't need a copy: see overrides below.
 
 **Workspaces** are per project. A workspace is a manifest at `<cwd>/.nvim-agent/workspaces/<name>/workspace.json` listing which agents run together:
 
@@ -118,7 +118,9 @@ Each entry pairs a **session name** (unique within the workspace, what peers add
 
 The **ephemeral workspace** is the one named `ephemeral`. It is created automatically the first time you launch nvim-agent in a directory, saved like any other, and offered as "Resume" on later launches. Promote it to a named workspace with `:NvimAgent workspace save-as`.
 
-**Sessions** are live agents in this Neovim instance. A session's `active/` dir is a mirror of its agent's files: anything you edit there (`:NvimAgent edit notes`, `dir add`, the notes keymaps, or just saving the file) is written straight back to the global agent definition. **Membership and liveness are separate.** If an agent's CLI exits, whether you typed `/exit` or it crashed, the session is marked exited and its status file is removed so peers stop delegating to it, but it stays in the workspace. Relaunch it with `:NvimAgent agent restart`, by opening it, or by having a peer call `spawn_agent` with its name. Only `:NvimAgent agent remove` takes an agent out of the workspace.
+**Overrides** are how one workspace customises an agent without touching the global definition. A member may override any of its agent's files for this workspace only; the override lives at `<cwd>/.nvim-agent/workspaces/<workspace>/<session>/<file>`. At launch the global agent is mirrored into the session's `active/` dir first and any overrides are laid on top, so the hook sees the override whenever one exists and the global file otherwise. The first time you edit a context file from a live session, whether through `:NvimAgent edit notes`, `dir add`, the notes keymaps, or simply saving the file, the override is created from the session's current content and the edit lands there. The global agent is never written by a session edit. `:NvimAgent agent push` promotes a member's current files to the global agent and clears its overrides; `agent reset` drops overrides and reloads from the global; `agent overrides` shows what each member overrides. The statusline marks a session with overrides with a `+` after the agent name. The ephemeral workspace supports overrides exactly like a named one, and they travel with it when you promote it. Overrides are keyed by session name, so two copies of the same agent in one workspace each keep their own.
+
+**Sessions** are live agents in this Neovim instance. A session's `active/` dir is the effective view of its agent: global files plus this workspace's overrides. **Membership and liveness are separate.** If an agent's CLI exits, whether you typed `/exit` or it crashed, the session is marked exited and its status file is removed so peers stop delegating to it, but it stays in the workspace. Relaunch it with `:NvimAgent agent restart`, by opening it, or by having a peer call `spawn_agent` with its name. `:NvimAgent agent stop` does the same deliberately. Only `:NvimAgent agent remove` takes an agent out of the workspace, and that also deletes its overrides.
 
 ## Usage
 
@@ -139,6 +141,10 @@ Loading a workspace while another is live asks before stopping the running agent
 ```
 :NvimAgent                       " toggle current terminal, or open the startup picker
 :NvimAgent open | close | toggle
+:NvimAgent open all              " arrange every running agent in a grid (new tab)
+:NvimAgent close all             " hide every agent window (processes keep running)
+:NvimAgent status                " team overview: state, role, task, mail, overrides per member
+:NvimAgent send [name] [text]    " type a line into an agent's terminal
 :NvimAgent refresh               " regenerate ephemeral.json
 
 :NvimAgent workspace new         " name → pick agents → launch
@@ -149,18 +155,21 @@ Loading a workspace while another is live asks before stopping the running agent
 :NvimAgent workspace save-as [name]   " promote the live (ephemeral) workspace
 
 :NvimAgent agent add [agent] [as-name]  " add a library agent to the live workspace and launch it
-:NvimAgent agent remove [name]          " stop it and drop it from the workspace
+:NvimAgent agent remove [name]          " stop it, drop it from the workspace, delete its overrides
+:NvimAgent agent stop [name]            " stop its CLI; it stays a member
 :NvimAgent agent restart [name]         " relaunch an exited member
+:NvimAgent agent push [name]            " promote a member's files to the global agent, clear overrides
+:NvimAgent agent overrides              " show which files each member overrides
+:NvimAgent agent reset [name] [file]    " drop one/all overrides and reload from the global agent
 :NvimAgent agent define                 " new global agent: name → role → opens its prompt
 :NvimAgent agent copy [src] [dst]       " duplicate a global agent (project-specific variant / adopt a spawned one)
 :NvimAgent agent edit [name]            " open a global agent's four files in a grid
 :NvimAgent agent delete [name]
 :NvimAgent agent list
-:NvimAgent agent save                   " explicitly write a session's context back to its agent
 
-:NvimAgent session list | switch [name]
+:NvimAgent session list | switch [name|n]
 
-:NvimAgent edit prompt | notes | dirs | role     " edit the current session's mirror (syncs to the agent on save)
+:NvimAgent edit prompt | notes | dirs | role     " edit the current session's files (saved as a workspace override)
 :NvimAgent view prompt | notes | dirs | role
 :NvimAgent dir add <tag> <path> <description> | dir remove <tag>
 :NvimAgent tmux add [lines] | clear | view
@@ -170,7 +179,28 @@ Loading a workspace while another is live asks before stopping the running agent
 
 Tab-completion covers every nested form, including agent, member, workspace and session names.
 
-A `<leader>a` keymap group is registered via which-key: `<leader>aw` for workspaces, `<leader>aa` for agents, `<leader>aS` for sessions, plus notes, dirs, prompt, tmux and history groups. See `lua/nvim-agent/keymaps.lua` for the full list.
+### Keymaps
+
+A `<leader>a` group is registered via which-key. The most used bindings:
+
+| Keys | Action |
+| --- | --- |
+| `<leader>a1` … `<leader>a9` | Jump to the nth agent (relaunches it if exited) |
+| `<leader>al` / `<leader>aL` | Switch agent (picker) / list sessions |
+| `<leader>aG` / `<leader>aH` | Show every running agent in a grid / hide all agent windows |
+| `<leader>ap` | Team status: state, role, current task, pending mail, overrides |
+| `<leader>am` | Type a message into an agent's terminal |
+| `<leader>ao` / `<leader>aT` | Open / toggle the current agent terminal |
+| `<leader>aw…` | Workspaces: `n`ew, `l`oad, `L`ist, `r`emove, `R`ename, `s`ave-as |
+| `<leader>aa…` | Agents: `a`dd, `r`emove, `s`top, `R`estart, `d`efine, `c`opy, `e`dit global, `x` delete, `l`ist, `p`ush, `o`verrides, `z` reset |
+| `<leader>an…` / `<leader>ad…` / `<leader>as…` | Notes / pinned dirs / system prompt: `a`dd, `e`dit, `v`iew, `d`elete. Each asks which agent when more than one is live, and saves as a workspace override. |
+| `<leader>aR` | Edit the picked agent's role for this workspace |
+| `<leader>av` / `<leader>ae` | View an agent's context grid / the shared ephemeral context |
+| `<leader>at…` / `<leader>ah…` | Tmux captures / history |
+| `<leader>ax` (visual) | Send the selection to an agent, prefixed with `path:lines` |
+| `<leader>aQ` | Graceful quit |
+
+See `lua/nvim-agent/keymaps.lua` for the full list.
 
 ## How context reaches the agent
 
@@ -252,6 +282,9 @@ Every running agent advertises a status file containing its current task and its
 ```
 <cwd>/.nvim-agent/
 ├── workspaces/<name>/workspace.json   # { "name", "agents": [{ "name", "agent" }] }, saved on every change
+├── workspaces/<name>/<session>/       # that member's override files for this workspace only
+│   ├── user_notes.md                  #   any of the agent's files may appear here;
+│   └── persistent_dirs.json           #   present = used instead of the global one
 ├── workspaces/ephemeral/workspace.json
 └── instances/<instance-id>/           # one subtree per running Neovim (UUID minted at setup)
     ├── status/<agent>.json            # peer discovery: each running agent advertises here
