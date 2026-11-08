@@ -16,16 +16,15 @@ local M = adapter_base.new({})
 --   { "allow": [...], "deny": [...] }      — custom allow/deny lists
 --
 -- Available profiles:
---   "full"      — all tools (default for agents without a permissions file)
---   "read-only" — can read code, search, run non-destructive commands; no writes
---   "no-code"   — cannot read or write code; can only use agent communication tools
+--   "full"         — all tools (default for agents without a permissions file)
+--   "oversight"    — read-only: Read/Glob/Grep built-ins, read-only MCP, coordination
+--   "orchestrator" — oversight + spawn_agent
 ------------------------------------------------------------------------
 
 -- Permission profiles are built from a small set of named tool groups so that
 -- changes to the MCP tool surface land in one place.
 local TOOL_GROUPS = {
 	read_builtins = { "Read(*)", "Glob(*)", "Grep(*)" },
-	write_builtins = { "Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)" },
 	mcp_read = {
 		"mcp__nvim-agent__read_file",
 		"mcp__nvim-agent__search_file",
@@ -72,15 +71,6 @@ local PERMISSION_PROFILES = {
 		deny = {},
 	},
 
-	-- QA: full filesystem access via Claude built-ins, plus read-only MCP
-	-- surface and coordination tools. (get_cursor is QA-specific.)
-	["qa"] = profile(
-		TOOL_GROUPS.write_builtins,
-		TOOL_GROUPS.mcp_read,
-		{ "mcp__nvim-agent__get_cursor" },
-		TOOL_GROUPS.mcp_coord
-	),
-
 	-- Oversight: read-only access for stakeholders.
 	-- For: Product Managers, CEOs, stakeholders
 	["oversight"] = profile(TOOL_GROUPS.read_builtins, TOOL_GROUPS.mcp_read, TOOL_GROUPS.mcp_coord),
@@ -94,10 +84,6 @@ local PERMISSION_PROFILES = {
 		{ "mcp__nvim-agent__spawn_agent" }
 	),
 }
-
--- Backward compatibility: old profile names map to new ones
-PERMISSION_PROFILES["read-only"] = PERMISSION_PROFILES["qa"]
-PERMISSION_PROFILES["no-code"] = PERMISSION_PROFILES["oversight"]
 
 --- Resolve permissions for a session. Checks (in order):
 ---   1. <session.active_dir>/permissions.json (mirrored from the agent)
@@ -136,7 +122,8 @@ function M:get_cmd(session)
 		return { "claude" }
 	end
 	local active_dir = session.active_dir
-	local debug_log = vim.fn.expand("~/.nvim-agent/claude-mcp-debug.log")
+	-- Per-session debug log; one shared file interleaved every agent's output.
+	local debug_log = session.dir .. "/claude-debug.log"
 
 	-- Layered composition: core preamble, this adapter's context contract,
 	-- the agent's role, the agent's system prompt. See
@@ -214,7 +201,7 @@ function M:setup_session_mcp(session)
 	end
 
 	local mcp_server_path = vim.api.nvim_get_runtime_file("lua/nvim-agent/mcp/server.lua", false)[1]
-	if not mcp_server_path or not vim.loop.fs_stat(mcp_server_path) then
+	if not mcp_server_path or not (vim.uv or vim.loop).fs_stat(mcp_server_path) then
 		vim.notify(
 			"nvim-agent: MCP server script not found on runtimepath (lua/nvim-agent/mcp/server.lua)",
 			vim.log.levels.WARN

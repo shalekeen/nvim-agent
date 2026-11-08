@@ -11,18 +11,19 @@
 local M = {}
 
 local config = require("nvim-agent.config")
+local uv = vim.uv or vim.loop
 
 --- Generate a random v4 UUID. Prefers libuv's CSPRNG; falls back to
 --- math.random seeded from the clock + pid if uv.random is unavailable.
 local function generate_uuid()
 	local bytes
 	local ok, raw = pcall(function()
-		return vim.loop.random(16)
+		return uv.random(16)
 	end)
 	if ok and type(raw) == "string" and #raw == 16 then
 		bytes = { raw:byte(1, 16) }
 	else
-		math.randomseed(os.time() + (vim.loop.hrtime() % 1000000) + vim.fn.getpid())
+		math.randomseed(os.time() + (uv.hrtime() % 1000000) + uv.os_getpid())
 		bytes = {}
 		for i = 1, 16 do
 			bytes[i] = math.random(0, 255)
@@ -44,9 +45,6 @@ end
 --- CLI and MCP server as NVIM_AGENT_INSTANCE_ID / NVIM_AGENT_RUNTIME_DIR so
 --- two Neovim instances open on the same project never share peer state.
 M.instance_id = generate_uuid()
-
---- Owning OS process id. Diagnostics only; no path derives from it.
-M.window_id = vim.fn.getpid()
 
 M.sessions = {} -- keyed by compound string id "<instance_id>_<name>"
 M.current_id = nil -- id of the last-focused session
@@ -97,7 +95,6 @@ function M.create(name, agent_name)
 		agent = agent_name,
 		state = "created", -- "created" | "running" | "exited"
 		instance_id = M.instance_id,
-		window_id = M.window_id,
 		process_dir = pdir,
 		dir = dir,
 		active_dir = active_dir,

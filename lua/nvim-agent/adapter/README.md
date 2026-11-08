@@ -60,7 +60,6 @@ same session table. Fields you can rely on:
 | `session.state` | `string` | `"created"`, `"running"` or `"exited"`. An exited session is still a workspace member and can be relaunched into the same `active_dir`. |
 | `session.instance_num` | `number` | Sequential 1-indexed creation order. Display ordering only. |
 | `session.instance_id` | `string` | UUID of the owning Neovim instance, minted once when nvim-agent loads. Also at `require("nvim-agent.session").instance_id`. |
-| `session.window_id` | `number` | Owning Neovim's PID (diagnostics only; no path derives from it). |
 | `session.process_dir` | `string` | `~/.nvim-agent/sessions/<instance-id>/`. Shared by all sessions in this Neovim. Holds `ephemeral.json`. |
 | `session.dir` | `string` | `<process_dir>/<name>/`. Per-session root. Good place for `mcp-settings.json` and any other per-session config. |
 | `session.active_dir` | `string` | `<dir>/active/`. A mirror of the agent's definition files (`role.md`, `system_prompt.md`, `user_notes.md`, `persistent_dirs.json`, optional `permissions.json`). **This is the path you point your CLI at.** Edits saved here are written back to the agent. |
@@ -244,7 +243,7 @@ library dir (`~/.nvim-agent/agents/<name>/`) may contain
 The format the bundled adapter uses:
 
 ```json
-{ "profile": "qa" }
+{ "profile": "oversight" }
 ```
 
 or
@@ -253,7 +252,7 @@ or
 { "allow": ["mcp__nvim-agent__read_file"], "deny": ["Bash(*)"] }
 ```
 
-`claude_code.lua` defines named profiles (`full`, `qa`, `oversight`,
+`claude_code.lua` defines named profiles (`full`, `oversight`,
 `orchestrator`) and a `get_agent_permissions(session)` helper that reads
 `<session.active_dir>/permissions.json` and resolves them. If you want the same UX in your adapter, copy the pattern.
 If your CLI's permission model is simpler, do something simpler.

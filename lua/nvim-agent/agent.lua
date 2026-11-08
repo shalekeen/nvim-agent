@@ -206,14 +206,6 @@ function M.read_role(name, spawned)
 	return (role:gsub("%s+$", ""))
 end
 
---- Role placeholder written for agents imported from the legacy layout, which
---- never had a mandatory role. Pickers surface it so the user fills it in.
---- @param name string
---- @return string
-function M.placeholder_role(name)
-	return name .. " (describe this agent's role)"
-end
-
 ------------------------------------------------------------------------
 -- Create / copy / delete
 ------------------------------------------------------------------------
@@ -325,90 +317,6 @@ function M.save(name, source_dir)
 		copy_if_present(source_dir .. "/" .. f, dir .. "/" .. f)
 	end
 	return true
-end
-
-------------------------------------------------------------------------
--- Legacy migration  (flavors + agent_templates → agents/)
-------------------------------------------------------------------------
-
--- Names under base_dir that are plugin-owned, never agent sources.
-local LEGACY_RESERVED = {
-	agents = true,
-	sessions = true,
-	hooks = true,
-	agent_templates = true,
-	last_flavor = true,
-	active = true,
-}
-
-local function import_definition_dir(src, name, report)
-	if M.exists(name) then
-		table.insert(report.skipped, name)
-		return
-	end
-	if vim.fn.filereadable(src .. "/system_prompt.md") ~= 1 then
-		return
-	end
-	local dst = M.dir(name, false)
-	vim.fn.mkdir(dst, "p")
-	for _, f in ipairs(M.AGENT_FILES) do
-		copy_if_present(src .. "/" .. f, dst .. "/" .. f)
-	end
-	if is_blank(read_file(dst .. "/role.md")) then
-		write_file(dst .. "/role.md", M.placeholder_role(name) .. "\n")
-		table.insert(report.needs_role, name)
-	end
-	if vim.fn.filereadable(dst .. "/user_notes.md") ~= 1 then
-		write_file(dst .. "/user_notes.md", DEFAULT_NOTES)
-	end
-	if vim.fn.filereadable(dst .. "/persistent_dirs.json") ~= 1 then
-		write_file(dst .. "/persistent_dirs.json", "[]")
-	end
-	table.insert(report.imported, name)
-end
-
---- One-time import of the pre-2.0 global layout:
----   ~/.nvim-agent/<flavor>/            (base files only; checkpoints/ ignored)
----   ~/.nvim-agent/agent_templates/<t>/
---- into ~/.nvim-agent/agents/. Sources are COPIED, never moved or deleted,
---- so nothing is lost; a stamp file prevents re-running. Returns the report
---- (or nil when already migrated / nothing to do) so setup can notify once.
---- @return table|nil  { imported = string[], skipped = string[], needs_role = string[] }
-function M.migrate_legacy()
-	local base = config.get().base_dir
-	local stamp = base .. "/.agents_migrated"
-	if vim.fn.filereadable(stamp) == 1 then
-		return nil
-	end
-	if vim.fn.isdirectory(base) ~= 1 then
-		return nil
-	end
-
-	local report = { imported = {}, skipped = {}, needs_role = {} }
-
-	for _, entry in ipairs(vim.fn.readdir(base)) do
-		local path = base .. "/" .. entry
-		if not LEGACY_RESERVED[entry] and not entry:match("^%.") and vim.fn.isdirectory(path) == 1 then
-			import_definition_dir(path, entry, report)
-		end
-	end
-
-	local tpl_base = base .. "/agent_templates"
-	if vim.fn.isdirectory(tpl_base) == 1 then
-		for _, entry in ipairs(vim.fn.readdir(tpl_base)) do
-			local path = tpl_base .. "/" .. entry
-			if not entry:match("^%.") and vim.fn.isdirectory(path) == 1 then
-				import_definition_dir(path, entry, report)
-			end
-		end
-	end
-
-	write_file(stamp, os.date("%Y-%m-%dT%H:%M:%S") .. "\n")
-
-	if #report.imported == 0 and #report.skipped == 0 then
-		return nil
-	end
-	return report
 end
 
 return M

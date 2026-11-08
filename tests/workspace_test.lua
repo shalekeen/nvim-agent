@@ -3,8 +3,7 @@
 --
 -- Covers <cwd>/.nvim-agent/workspaces/<name>/workspace.json manifests
 -- (ephemeral first, auto-save on every membership change), the per-instance
--- runtime tree, the session registry's membership-vs-liveness split, and the
--- one-time import of a legacy def-dir project.
+-- runtime tree, and the session registry's membership-vs-liveness split.
 
 local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)") or "./"
 local plugin_root = (script_dir:gsub("/$", "")):gsub("/tests$", "")
@@ -147,11 +146,6 @@ on_disk = workspace.read("feature-dev", cwd)
 assert_eq("remove persisted immediately", #on_disk.agents, 2)
 check("remove of non-member fails", workspace.remove_entry(named, "Alice-2", cwd) == false)
 
--- Legacy manifest entries without an `agent` field are normalised on read.
-write(cwd .. "/.nvim-agent/workspaces/old-shape/workspace.json", '{"name":"old-shape","agents":[{"name":"Alice"}]}')
-local old = workspace.read("old-shape", cwd)
-check("read normalises entry.agent = entry.name", old and old.agents[1].agent == "Alice")
-
 -- ---------------------------------------------------------------------------
 -- 3b. Per-workspace overrides: workspaces/<ws>/<session>/<file>
 -- ---------------------------------------------------------------------------
@@ -264,37 +258,6 @@ session.close(s2.id)
 check("close drops the session", session.get_by_name("Alice-2") == nil)
 check("close of other session leaves s1", session.get_by_name("Alice") == s1)
 session.close(s1.id)
-
--- ---------------------------------------------------------------------------
--- 6. Legacy def-dir project import
--- ---------------------------------------------------------------------------
-
-local legacy_cwd = sandbox .. "/legacy-project"
-vim.fn.mkdir(legacy_cwd, "p")
-write(legacy_cwd .. "/.nvim-agent/config.json", '{"workspace_def_dir":".nvim-workspace"}')
-write(legacy_cwd .. "/.nvim-workspace/agents/Lead/system_prompt.md", "LEAD PROMPT")
-write(legacy_cwd .. "/.nvim-workspace/agents/Lead/role.md", "lead implementer\n")
-write(legacy_cwd .. "/.nvim-workspace/agents/Lead/permissions.json", '{"profile":"full"}')
-write(legacy_cwd .. "/.nvim-workspace/agents/QA/system_prompt.md", "QA PROMPT")
--- QA has no role.md → placeholder.
-write(legacy_cwd .. "/.nvim-workspace/agents/Alice/system_prompt.md", "SHOULD NOT CLOBBER GLOBAL ALICE")
-write(legacy_cwd .. "/.nvim-workspace/workspaces/team.json", '{"name":"team","agents":[{"name":"Lead","role":"x"},{"name":"QA"},{"name":"Missing"}]}')
-
-local report = workspace.import_legacy(legacy_cwd)
-check("import returns a report", report ~= nil)
-check("Lead imported to global library", agent.exists("Lead"))
-assert_eq("Lead role kept", agent.read_role("Lead"), "lead implementer")
-assert_eq("Lead permissions carried", read(base_dir .. "/agents/Lead/permissions.json"), '{"profile":"full"}')
-check("QA imported with placeholder role", agent.read_role("QA") == agent.placeholder_role("QA"))
-check("QA in needs_role", vim.tbl_contains(report.needs_role, "QA"))
-assert_eq("global Alice not clobbered", agent.read_role("Alice"), "lead")
-local team = workspace.read("team", legacy_cwd)
-check("manifest rewritten into new layout", team ~= nil)
-check("manifest entries carry name + agent, missing agents dropped", team and #team.agents == 2 and team.agents[1].agent == "Lead" and team.agents[2].name == "QA")
-check("config.json renamed to .legacy", vim.fn.filereadable(legacy_cwd .. "/.nvim-agent/config.json") == 0 and vim.fn.filereadable(legacy_cwd .. "/.nvim-agent/config.json.legacy") == 1)
-check("def dir left untouched", vim.fn.filereadable(legacy_cwd .. "/.nvim-workspace/agents/QA/system_prompt.md") == 1)
-check("second import is a no-op (nil)", workspace.import_legacy(legacy_cwd) == nil)
-check("project without legacy config: import is nil", workspace.import_legacy(cwd) == nil)
 
 -- ---------------------------------------------------------------------------
 -- Cleanup + summary

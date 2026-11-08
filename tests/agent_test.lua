@@ -2,8 +2,7 @@
 -- Run with: nvim -l tests/agent_test.lua
 --
 -- Covers ~/.nvim-agent/agents/: create (role mandatory), the spawned
--- section, resolution order, copy, load/save mirroring, delete, and the
--- one-time migration of legacy flavors + agent_templates.
+-- section, resolution order, copy, load/save mirroring, and delete.
 
 local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)") or "./"
 local plugin_root = (script_dir:gsub("/$", "")):gsub("/tests$", "")
@@ -122,7 +121,7 @@ end)())
 local ok_shadow, err_shadow = agent.create("Alice", { role = "x", spawned = true })
 check("cannot spawn over an existing user agent", not ok_shadow and err_shadow:find("already exists") ~= nil)
 
--- If both exist on disk (legacy / manual), the user agent wins resolution.
+-- If both exist on disk (created by hand), the user agent wins resolution.
 vim.fn.mkdir(base_dir .. "/agents/spawned/Bob", "p")
 write(base_dir .. "/agents/spawned/Bob/role.md", "impostor\n")
 local bdir, bspawned = agent.resolve("Bob")
@@ -133,11 +132,11 @@ vim.fn.delete(base_dir .. "/agents/spawned/Bob", "rf")
 -- 4. Copy: always lands as a user agent, carries every file
 -- ---------------------------------------------------------------------------
 
-write(base_dir .. "/agents/Alice/permissions.json", '{"profile":"qa"}')
+write(base_dir .. "/agents/Alice/permissions.json", '{"profile":"oversight"}')
 assert_eq("copy Alice → Alice-proj", agent.copy("Alice", "Alice-proj"), true)
 assert_eq("copy carries role", read(base_dir .. "/agents/Alice-proj/role.md"), "lead implementer\n")
 assert_eq("copy carries prompt", read(base_dir .. "/agents/Alice-proj/system_prompt.md"), "DEFAULT_PROMPT")
-assert_eq("copy carries permissions", read(base_dir .. "/agents/Alice-proj/permissions.json"), '{"profile":"qa"}')
+assert_eq("copy carries permissions", read(base_dir .. "/agents/Alice-proj/permissions.json"), '{"profile":"oversight"}')
 check("copy onto existing name fails", agent.copy("Alice", "Bob") == false)
 check("copy of missing source fails", agent.copy("Nope", "X") == false)
 assert_eq("copy of spawned agent becomes a user agent", agent.copy("Zed", "Zed-adopted"), true)
@@ -150,7 +149,7 @@ check("adopted copy at top level", vim.fn.isdirectory(base_dir .. "/agents/Zed-a
 local active = sandbox .. "/sessions/x/Alice/active"
 assert_eq("load Alice into active_dir", agent.load("Alice", active), true)
 assert_eq("load copied role", read(active .. "/role.md"), "lead implementer\n")
-assert_eq("load copied permissions", read(active .. "/permissions.json"), '{"profile":"qa"}')
+assert_eq("load copied permissions", read(active .. "/permissions.json"), '{"profile":"oversight"}')
 check("load of missing agent fails", agent.load("Nope", sandbox .. "/never") == false)
 
 write(active .. "/user_notes.md", "project note\n")
@@ -169,59 +168,6 @@ check("Bob gone", not agent.exists("Bob"))
 check("delete missing fails", agent.delete("Bob") == false)
 assert_eq("delete spawned Zed", agent.delete("Zed"), true)
 check("Zed gone from spawned/", vim.fn.isdirectory(base_dir .. "/agents/spawned/Zed") == 0)
-
--- ---------------------------------------------------------------------------
--- 7. Legacy migration: flavors + templates → agents/, copied not moved,
---    checkpoints ignored, placeholder role where missing, runs once.
--- ---------------------------------------------------------------------------
-
-local legacy_base = sandbox .. "/legacy-base"
-vim.fn.mkdir(legacy_base, "p")
-config.setup({ base_dir = legacy_base, default_system_prompt = "D" })
-
--- A flavor with a checkpoint and no role.
-write(legacy_base .. "/dev/system_prompt.md", "DEV PROMPT")
-write(legacy_base .. "/dev/user_notes.md", "dev notes")
-write(legacy_base .. "/dev/persistent_dirs.json", '[{"tag":"src","path":"/src"}]')
-write(legacy_base .. "/dev/checkpoints/v2/system_prompt.md", "CHECKPOINT PROMPT")
--- A template with a role.
-write(legacy_base .. "/agent_templates/SrSWE/system_prompt.md", "SR PROMPT")
-write(legacy_base .. "/agent_templates/SrSWE/role.md", "senior engineer\n")
--- Reserved / non-flavor dirs that must be ignored.
-vim.fn.mkdir(legacy_base .. "/sessions/123/main/active", "p")
-vim.fn.mkdir(legacy_base .. "/hooks", "p")
-vim.fn.mkdir(legacy_base .. "/last_flavor", "p")
-vim.fn.mkdir(legacy_base .. "/.cache", "p")
-vim.fn.mkdir(legacy_base .. "/random-dir-without-prompt", "p")
--- An agent that already exists in the new layout must be skipped, not clobbered.
-agent.create("dev-existing", { role = "pre-existing" })
-write(legacy_base .. "/dev-existing/system_prompt.md", "LEGACY SHOULD NOT WIN")
-
-local report = agent.migrate_legacy()
-check("migration returns a report", report ~= nil)
-check("flavor 'dev' imported", agent.exists("dev"))
-assert_eq("imported flavor prompt", read(legacy_base .. "/agents/dev/system_prompt.md"), "DEV PROMPT")
-assert_eq("imported flavor dirs", read(legacy_base .. "/agents/dev/persistent_dirs.json"), '[{"tag":"src","path":"/src"}]')
-assert_eq("flavor without role gets placeholder", agent.read_role("dev"), agent.placeholder_role("dev"))
-check("placeholder reported in needs_role", vim.tbl_contains(report.needs_role, "dev"))
-check("checkpoints are NOT imported as agents", not agent.exists("v2") and vim.fn.isdirectory(legacy_base .. "/agents/dev/checkpoints") == 0)
-check("template 'SrSWE' imported", agent.exists("SrSWE"))
-assert_eq("template role kept", agent.read_role("SrSWE"), "senior engineer")
-check("template not in needs_role", not vim.tbl_contains(report.needs_role, "SrSWE"))
-check("reserved dirs not imported", not agent.exists("sessions") and not agent.exists("hooks") and not agent.exists("last_flavor"))
-check("dir without system_prompt.md not imported", not agent.exists("random-dir-without-prompt"))
-assert_eq("existing agent not clobbered", read(legacy_base .. "/agents/dev-existing/system_prompt.md"), "D")
-check("existing agent reported as skipped", vim.tbl_contains(report.skipped, "dev-existing"))
-check("legacy flavor dir left in place", vim.fn.isdirectory(legacy_base .. "/dev") == 1)
-check("legacy template dir left in place", vim.fn.isdirectory(legacy_base .. "/agent_templates/SrSWE") == 1)
-check("migration stamp written", vim.fn.filereadable(legacy_base .. "/.agents_migrated") == 1)
-check("second migration run is a no-op (nil)", agent.migrate_legacy() == nil)
-
--- A pristine base dir migrates nothing and reports nil.
-local pristine = sandbox .. "/pristine"
-vim.fn.mkdir(pristine, "p")
-config.setup({ base_dir = pristine })
-check("pristine base_dir: migrate_legacy returns nil", agent.migrate_legacy() == nil)
 
 -- ---------------------------------------------------------------------------
 -- Cleanup + summary

@@ -1,14 +1,6 @@
 local M = {}
 
---- Persist one edited context file of a live session as a workspace
---- override for that member. The global agent is never written here; use
---- :NvimAgent agent push for that.
---- @param sess table
---- @param file string   one of agent.AGENT_FILES
---- @param silent boolean|nil
-function M.sync_session_file(sess, file, silent)
-	return require("nvim-agent.launcher").sync_session_file(sess, file, silent)
-end
+local uv = vim.uv or vim.loop
 
 function M.register()
 	-- Idempotent: if register() is invoked twice (e.g. plugin reload), the old
@@ -115,7 +107,7 @@ function M.register()
 			local active_dir = vim.fn.fnamemodify(ev.file, ":h")
 			local sess = require("nvim-agent.session").get_by_active_dir(active_dir)
 			if sess then
-				M.sync_session_file(sess, vim.fn.fnamemodify(ev.file, ":t"))
+				require("nvim-agent.launcher").sync_session_file(sess, vim.fn.fnamemodify(ev.file, ":t"))
 			end
 		end,
 		desc = "nvim-agent: save edited context file as a workspace override",
@@ -126,7 +118,7 @@ function M.register()
 	-- trigger or message file, send a wakeup to resume inference.
 	M._session_ticks = {}
 	M._handled_msg_mtime = {}
-	M._continuation_timer = vim.loop.new_timer()
+	M._continuation_timer = uv.new_timer()
 	M._continuation_timer:start(
 		30000,
 		30000,
@@ -159,7 +151,7 @@ function M.register()
 						local msg_file = msg_dir .. "/" .. sess.name .. ".md"
 						local has_trigger = vim.fn.getfsize(trigger_file) > 0
 
-						local msg_stat = vim.loop.fs_stat(msg_file)
+						local msg_stat = uv.fs_stat(msg_file)
 						local msg_mtime = nil
 						if msg_stat and (msg_stat.size or 0) > 0 and msg_stat.mtime then
 							msg_mtime = (msg_stat.mtime.sec or 0) * 1e9 + (msg_stat.mtime.nsec or 0)
@@ -196,7 +188,7 @@ function M.register()
 
 	-- Poll every 30 s for new messages addressed to the current session and
 	-- surface a notification. Content is injected by the adapter's hook.
-	M._msg_timer = vim.loop.new_timer()
+	M._msg_timer = uv.new_timer()
 	M._msg_timer:start(
 		30000,
 		30000,

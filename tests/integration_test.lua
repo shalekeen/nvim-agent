@@ -203,7 +203,6 @@ local ok_setup, err_setup = pcall(function()
 end)
 check("setup() succeeds when which-key + barbar are present", ok_setup, err_setup)
 check("setup() creates <base_dir>/agents/", vim.fn.isdirectory(setup_base .. "/agents") == 1)
-check("setup() writes the migration stamp on a fresh base_dir", vim.fn.filereadable(setup_base .. "/.agents_migrated") == 1 or vim.fn.isdirectory(setup_base) == 1)
 
 -- The hook script lands under the sandbox base_dir, not the user's home.
 check("adapter setup wrote the hook under the sandbox base_dir", vim.fn.filereadable(setup_base .. "/hooks/claude_code_prompt.sh") == 1)

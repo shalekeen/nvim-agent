@@ -256,11 +256,7 @@ function M.pick_library_agent(opts, on_pick)
 	opts = opts or {}
 	local agents = agent_mod().list()
 	local options, map = {}, {}
-	local seen_spawned = false
 	for _, a in ipairs(agents) do
-		if a.spawned and not seen_spawned then
-			seen_spawned = true
-		end
 		local label = (a.spawned and "[spawned] " or "") .. a.name .. "  — " .. trunc(a.role or "(no role)", 50)
 		table.insert(options, label)
 		map[label] = { agent = a.name }
@@ -449,16 +445,6 @@ end
 function M.startup(cwd)
 	cwd = cwd or vim.fn.getcwd()
 	local ws = workspace_mod()
-
-	local report = ws.import_legacy(cwd)
-	if report then
-		notify(string.format(
-			"imported legacy workspace project: %d agent(s) → global library, %d workspace(s)%s",
-			#report.agents,
-			#report.workspaces,
-			#report.needs_role > 0 and (". Needs a role: " .. table.concat(report.needs_role, ", ")) or ""
-		), vim.log.levels.WARN)
-	end
 
 	if not ws.any_exist(cwd) then
 		local m = ws.new_manifest(ws.EPHEMERAL)

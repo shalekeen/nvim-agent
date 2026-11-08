@@ -143,7 +143,6 @@ function M.new_manifest(name)
 end
 
 --- Read a manifest, or nil if it does not exist / is unreadable.
---- Normalises legacy entries that lack an `agent` field.
 --- @param name string
 --- @param cwd string|nil
 --- @return table|nil
@@ -154,9 +153,6 @@ function M.read(name, cwd)
 	end
 	m.name = name
 	m.agents = m.agents or {}
-	for _, e in ipairs(m.agents) do
-		e.agent = e.agent or e.name
-	end
 	return m
 end
 
@@ -452,99 +448,6 @@ end
 --- @return table|nil
 function M.get_current()
 	return M.current
-end
-
-------------------------------------------------------------------------
--- Legacy import  (<def_dir>/agents + <def_dir>/workspaces → new layout)
-------------------------------------------------------------------------
-
---- One-time import of a pre-2.0 project: reads .nvim-agent/config.json for
---- the checked-in definition dir, copies each agent there into the GLOBAL
---- library (skipping names that already exist, planting a placeholder role
---- where none was defined), and rewrites each manifest into the new
---- workspaces/<name>/workspace.json shape. The legacy config.json is renamed
---- to config.json.legacy so this runs once; the def dir itself is untouched.
---- @param cwd string|nil
---- @return table|nil  { agents = string[], workspaces = string[], needs_role = string[] } or nil when nothing to do
-function M.import_legacy(cwd)
-	cwd = cwd or vim.fn.getcwd()
-	local cfg_path = M.runtime_dir(cwd) .. "/config.json"
-	local cfg = read_json(cfg_path)
-	if not cfg or not cfg.workspace_def_dir then
-		return nil
-	end
-	local def_dir = cwd .. "/" .. cfg.workspace_def_dir
-	if vim.fn.isdirectory(def_dir) ~= 1 then
-		os.rename(cfg_path, cfg_path .. ".legacy")
-		return nil
-	end
-
-	local agent_mod = require("nvim-agent.agent")
-	local report = { agents = {}, workspaces = {}, needs_role = {} }
-
-	for _, path in ipairs(vim.fn.glob(def_dir .. "/agents/*/", false, true)) do
-		local name = path:match("/([^/]+)/$")
-		if name and not agent_mod.exists(name) then
-			local role = nil
-			local rf = io.open(path .. "role.md", "r")
-			if rf then
-				role = rf:read("*a")
-				rf:close()
-			end
-			local function slurp(file)
-				local f = io.open(path .. file, "r")
-				if not f then
-					return nil
-				end
-				local c = f:read("*a")
-				f:close()
-				return c
-			end
-			local needs_role = not role or role:match("^%s*$")
-			local ok = agent_mod.create(name, {
-				role = needs_role and agent_mod.placeholder_role(name) or role,
-				system_prompt = slurp("system_prompt.md"),
-				user_notes = slurp("user_notes.md"),
-				persistent_dirs = slurp("persistent_dirs.json"),
-			})
-			if ok then
-				local perms = slurp("permissions.json")
-				if perms then
-					local pf = io.open(agent_mod.dir(name, false) .. "/permissions.json", "w")
-					if pf then
-						pf:write(perms)
-						pf:close()
-					end
-				end
-				table.insert(report.agents, name)
-				if needs_role then
-					table.insert(report.needs_role, name)
-				end
-			end
-		end
-	end
-
-	for _, path in ipairs(vim.fn.glob(def_dir .. "/workspaces/*.json", false, true)) do
-		local legacy = read_json(path)
-		local name = legacy and legacy.name or vim.fn.fnamemodify(path, ":t:r")
-		if legacy and not M.exists(name, cwd) then
-			local m = M.new_manifest(name)
-			for _, a in ipairs(legacy.agents or {}) do
-				if a.name and agent_mod.exists(a.name) then
-					table.insert(m.agents, { name = a.name, agent = a.name })
-				end
-			end
-			M.save(m, cwd)
-			table.insert(report.workspaces, name)
-		end
-	end
-
-	os.rename(cfg_path, cfg_path .. ".legacy")
-
-	if #report.agents == 0 and #report.workspaces == 0 then
-		return nil
-	end
-	return report
 end
 
 return M

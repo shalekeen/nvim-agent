@@ -22,20 +22,6 @@ function M.setup(opts)
 	vim.fn.mkdir(cfg.base_dir, "p")
 	vim.fn.mkdir(cfg.base_dir .. "/agents", "p")
 
-	-- One-time import of the pre-2.0 global layout (flavors, templates).
-	local report = require("nvim-agent.agent").migrate_legacy()
-	if report then
-		local msg = string.format(
-			"nvim-agent: imported %d legacy flavor/template definition(s) into %s/agents/ (sources left in place)",
-			#report.imported,
-			cfg.base_dir
-		)
-		if #report.needs_role > 0 then
-			msg = msg .. "\nThese need a role (edit role.md): " .. table.concat(report.needs_role, ", ")
-		end
-		vim.notify(msg, vim.log.levels.WARN)
-	end
-
 	local adapter_mod = require("nvim-agent.adapter")
 	if cfg.adapter then
 		local resolved = adapter_mod.resolve(cfg.adapter)

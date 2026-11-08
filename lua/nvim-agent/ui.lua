@@ -16,7 +16,7 @@ local function create_float(opts)
     local bufnr = vim.api.nvim_create_buf(false, true)
 
     -- Set buffer options
-    vim.api.nvim_buf_set_option(bufnr, 'bufhidden', 'wipe')
+    vim.bo[bufnr].bufhidden = 'wipe'
 
     -- Window options
     local win_opts = {
@@ -35,8 +35,8 @@ local function create_float(opts)
     local winid = vim.api.nvim_open_win(bufnr, true, win_opts)
 
     -- Set window options
-    vim.api.nvim_win_set_option(winid, 'winblend', opts.winblend or 0)
-    vim.api.nvim_win_set_option(winid, 'cursorline', true)
+    vim.wo[winid].winblend = opts.winblend or 0
+    vim.wo[winid].cursorline = true
 
     return bufnr, winid
 end
@@ -54,8 +54,8 @@ function M.input(opts, on_confirm)
     local col = math.floor((vim.o.columns - width) / 2)
 
     local bufnr = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_option(bufnr, 'bufhidden', 'wipe')
-    vim.api.nvim_buf_set_option(bufnr, 'buftype', 'prompt')
+    vim.bo[bufnr].bufhidden = 'wipe'
+    vim.bo[bufnr].buftype = 'prompt'
 
     local prompt_text = opts.prompt or 'Input: '
     vim.fn.prompt_setprompt(bufnr, prompt_text)
@@ -77,7 +77,7 @@ function M.input(opts, on_confirm)
         title_pos = 'center',
     })
 
-    vim.api.nvim_win_set_option(winid, 'cursorline', true)
+    vim.wo[winid].cursorline = true
 
     -- Start in insert mode (scheduled to ensure it happens after window is fully set up)
     vim.schedule(function()
@@ -143,8 +143,8 @@ function M.select(items, opts, on_select)
     end
 
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-    vim.api.nvim_buf_set_option(bufnr, 'modifiable', false)
-    vim.api.nvim_buf_set_option(bufnr, 'filetype', 'nvim-agent-select')
+    vim.bo[bufnr].modifiable = false
+    vim.bo[bufnr].filetype = 'nvim-agent-select'
 
     -- Selection keymaps
     local function select_item()
@@ -199,18 +199,19 @@ function M.view_readonly(content, opts)
     vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
 
     -- Set as read-only
-    vim.api.nvim_buf_set_option(bufnr, 'modifiable', false)
-    vim.api.nvim_buf_set_option(bufnr, 'readonly', true)
+    vim.bo[bufnr].modifiable = false
+    vim.bo[bufnr].readonly = true
 
     if opts.filetype then
-        vim.api.nvim_buf_set_option(bufnr, 'filetype', opts.filetype)
+        vim.bo[bufnr].filetype = opts.filetype
     end
 
     -- Add help text at bottom
-    vim.api.nvim_buf_set_option(bufnr, 'modifiable', true)
-    local help_text = '--- Press "e" to edit, "q" or <Esc> to close ---'
+    vim.bo[bufnr].modifiable = true
+    local help_text = opts.on_edit and '--- Press "e" to edit, "q" or <Esc> to close ---'
+        or '--- Press "q" or <Esc> to close ---'
     vim.api.nvim_buf_set_lines(bufnr, -1, -1, false, {'', help_text})
-    vim.api.nvim_buf_set_option(bufnr, 'modifiable', false)
+    vim.bo[bufnr].modifiable = false
 
     -- Keymaps
     vim.keymap.set('n', 'q', function()

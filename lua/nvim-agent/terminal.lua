@@ -404,22 +404,6 @@ function M.send(session_id, text)
 	end, 100)
 end
 
-function M.is_open(session_id)
-	local sess = get_session(session_id)
-	if not sess then
-		return false
-	end
-	return is_win_valid(sess)
-end
-
-function M.get_bufnr(session_id)
-	local sess = get_session(session_id)
-	if not sess then
-		return nil
-	end
-	return sess.bufnr
-end
-
 --- Find a session by name and submit text to its terminal. Used by the MCP
 --- trigger_agent tool via Neovim RPC. See M.send for why Enter is deferred.
 --- @param agent_name string  Session name
@@ -430,15 +414,7 @@ function M.send_by_name(agent_name, text)
 	if not sess or not sess.jobid then
 		return false
 	end
-	text = (text or ""):gsub("[\r\n]+$", "")
-	if text ~= "" then
-		vim.api.nvim_chan_send(sess.jobid, text)
-	end
-	vim.defer_fn(function()
-		if sess.jobid then
-			vim.api.nvim_chan_send(sess.jobid, "\r")
-		end
-	end, 100)
+	M.send(sess.id, text)
 	return true
 end
 

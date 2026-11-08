@@ -295,13 +295,6 @@ Every running agent advertises a status file containing its current task and its
 
 **Add `.nvim-agent/` to your project's `.gitignore`.** Workspaces reference agents from your personal library, so they are not meaningful to share. Instance subtrees are not deleted on exit; `:NvimAgent history project` stitches history from every instance back together for you, while agents themselves only ever see their own instance.
 
-### Migrating from earlier versions
-
-On first start, nvim-agent imports the old layouts once and leaves the sources in place:
-
-- Global flavors (`~/.nvim-agent/<flavor>/`, base files only; checkpoints are dropped) and agent templates (`~/.nvim-agent/agent_templates/`) become agents in `~/.nvim-agent/agents/`. Anything imported without a `role.md` gets a placeholder role you should replace.
-- A project with a checked-in definition directory (recorded in `.nvim-agent/config.json`) has its agents imported into the global library and its workspace manifests rewritten into the new location the first time you run `:NvimAgent` there. The old `config.json` is renamed `config.json.legacy`.
-
 ## Custom adapters
 
 To wire up a different agent CLI, implement an adapter that inherits from `require("nvim-agent.adapter").base`. See `lua/nvim-agent/adapter/README.md` for the full interface and a worked example based on the bundled Claude Code adapter.

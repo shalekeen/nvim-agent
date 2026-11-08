@@ -41,17 +41,12 @@ local function list_peer_names()
 	if RUNTIME_DIR == "" then
 		return peers
 	end
-	local handle = io.popen('ls "' .. project_comm_dir("status") .. '"/*.json 2>/dev/null')
-	if not handle then
-		return peers
-	end
-	for path in handle:lines() do
+	for _, path in ipairs(vim.fn.glob(project_comm_dir("status") .. "/*.json", false, true)) do
 		local name = path:match("/([^/]+)%.json$")
 		if name and name ~= AGENT_NAME then
 			table.insert(peers, name)
 		end
 	end
-	handle:close()
 	return peers
 end
 
@@ -96,7 +91,7 @@ local function deliver_message(recipient, from, content)
 		return false, "NVIM_AGENT_RUNTIME_DIR not set"
 	end
 	local msg_dir = project_comm_dir("messages")
-	os.execute("mkdir -p " .. msg_dir)
+	vim.fn.mkdir(msg_dir, "p")
 	local path = msg_dir .. "/" .. recipient .. ".md"
 	local timestamp = os.date("%Y-%m-%d %H:%M:%S")
 	local block = string.format("\n---\n**From: %s** | %s\n\n%s\n", from, timestamp, content)
@@ -130,7 +125,7 @@ end
 --- Locked because two instances of the same agent (e.g. across a session
 --- restart) could otherwise interleave writes to the same file.
 local function append_history(path, agent, summary)
-	os.execute("mkdir -p " .. path:match("(.+)/[^/]+$"))
+	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
 	local timestamp = os.date("%Y-%m-%d %H:%M")
 	local block = string.format("\n---\n**[%s] Agent: %s**\n\n%s\n", timestamp, agent, summary)
 	local ok = with_lock(path, function()
@@ -899,7 +894,7 @@ function M.execute(tool_name, arguments)
 		-- 2. Write trigger file so the continuation timer can also find it.
 		--    Locked because the timer truncates this same file when it fires.
 		local trigger_dir = project_comm_dir("triggers")
-		os.execute("mkdir -p " .. trigger_dir)
+		vim.fn.mkdir(trigger_dir, "p")
 		local trigger_path = trigger_dir .. "/" .. to .. ".md"
 		with_lock(trigger_path, function()
 			local tf = io.open(trigger_path, "a")
@@ -962,7 +957,7 @@ function M.execute(tool_name, arguments)
 			-- Write trigger file so the continuation timer wakes the agent within 30 s
 			-- even if the RPC wakeup below fails. Locked: the timer truncates this file.
 			local trigger_dir = project_comm_dir("triggers")
-			os.execute("mkdir -p " .. trigger_dir)
+			vim.fn.mkdir(trigger_dir, "p")
 			local trigger_path = trigger_dir .. "/" .. recipient .. ".md"
 			with_lock(trigger_path, function()
 				local tf = io.open(trigger_path, "a")
@@ -1053,7 +1048,7 @@ function M.execute(tool_name, arguments)
 		end
 
 		local status_dir = project_comm_dir("status")
-		os.execute("mkdir -p " .. status_dir)
+		vim.fn.mkdir(status_dir, "p")
 
 		-- Include the agent's current role so peers can discover it without a separate file
 		local role = nil
@@ -1174,7 +1169,7 @@ function M.execute(tool_name, arguments)
 
 		-- Write to $RUNTIME_DIR/history/<agent>.md
 		local hist_dir = project_comm_dir("history")
-		os.execute("mkdir -p " .. hist_dir)
+		vim.fn.mkdir(hist_dir, "p")
 		local hist_path = hist_dir .. "/" .. AGENT_NAME .. ".md"
 		local ok = append_history(hist_path, AGENT_NAME, summary)
 
@@ -1211,20 +1206,14 @@ function M.execute(tool_name, arguments)
 		end
 
 		local hist_dir = project_comm_dir("history")
-		local handle = io.popen('ls "' .. hist_dir .. '"/*.md 2>/dev/null')
-		if not handle then
-			return { { type = "text", text = "No project history found" } }, false
-		end
-
 		local parts = {}
-		for path in handle:lines() do
+		for _, path in ipairs(vim.fn.glob(hist_dir .. "/*.md", false, true)) do
 			local agent_name = path:match("/([^/]+)%.md$") or "?"
 			local content = read_file_contents(path)
 			if content and not content:match("^%s*$") then
 				table.insert(parts, "### " .. agent_name .. "\n" .. content)
 			end
 		end
-		handle:close()
 
 		if #parts == 0 then
 			return { { type = "text", text = "No project history recorded yet" } }, false

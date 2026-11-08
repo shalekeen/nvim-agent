@@ -27,7 +27,7 @@ end
 -- /tmp/nvim_agent_<time>_00001.tmp — one agent's Neovim would then read the
 -- other agent's content. Mixing in our own pid makes the name per-process.
 local _tmp_seq = 0
-local _tmp_pid = vim.loop.os_getpid()
+local _tmp_pid = (vim.uv or vim.loop).os_getpid()
 
 local function shell_escape(s)
 	return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -171,13 +171,13 @@ function M.list_buffers()
     for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
       if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr) then
         local name = vim.api.nvim_buf_get_name(bufnr)
-        local bt   = vim.api.nvim_buf_get_option(bufnr, 'buftype')
-        local ft   = vim.api.nvim_buf_get_option(bufnr, 'filetype')
+        local bt   = vim.bo[bufnr].buftype
+        local ft   = vim.bo[bufnr].filetype
         if name ~= '' and bt == '' then
           table.insert(bufs, {
             bufnr    = bufnr,
             name     = name,
-            modified = vim.api.nvim_buf_get_option(bufnr, 'modified'),
+            modified = vim.bo[bufnr].modified,
             filetype = ft,
           })
         end

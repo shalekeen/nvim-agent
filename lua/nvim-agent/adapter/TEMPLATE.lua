@@ -33,11 +33,10 @@ local function hook_script_path()
 	return base_dir .. "/hooks/your_cli_prompt.sh"
 end
 
--- Where the MCP server lives on disk. Used by setup_session_mcp.
+-- Where the MCP server lives on disk. Used by setup_session_mcp. Resolved
+-- through the runtimepath so it works however the plugin was installed.
 local function mcp_server_path()
-	-- runtime_file resolves a path inside the plugin tree without needing the
-	-- user's plugin manager to expose it. See config.lua for the impl.
-	return config.runtime_file("mcp/server.lua")
+	return vim.api.nvim_get_runtime_file("lua/nvim-agent/mcp/server.lua", false)[1]
 end
 
 ------------------------------------------------------------------------
