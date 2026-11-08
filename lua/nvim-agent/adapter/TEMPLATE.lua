@@ -60,7 +60,7 @@ function M:get_cmd(session)
 		return { "your-cli" }
 	end
 
-	-- Three-layer composition: runtime preamble + system_prompt.md + agent_prompt.md.
+	-- Layered composition: preamble + your context contract + role.md + system_prompt.md.
 	local prompt = context.compose_system_prompt(session.active_dir)
 
 	-- Strategy A — pass the prompt as a CLI argument.
@@ -110,16 +110,17 @@ edits so changes land in the user's live Neovim buffers.]]
 end
 
 ------------------------------------------------------------------------
--- §1c. get_agent_permissions(agent_name, cwd)   ── OPTIONAL
+-- §1c. get_agent_permissions(session)   ── OPTIONAL
 --
 -- Per-agent tool permissions. The base returns { allow = {}, deny = {} }
 -- because permission grammar is CLI-specific. If your CLI has a per-tool
--- permission model, override this and have get_cmd() translate the result
--- into the CLI's flag (see claude_code.lua: named profiles resolved from
--- <def_dir>/agents/<name>/permissions.json, passed via --allowedTools).
+-- permission model, override this, read <session.active_dir>/permissions.json
+-- (the agent's optional permissions file, mirrored in at launch) and have
+-- get_cmd() translate the result into the CLI's flag (see claude_code.lua:
+-- named profiles passed via --allowedTools).
 ------------------------------------------------------------------------
 
--- function M:get_agent_permissions(agent_name, cwd)
+-- function M:get_agent_permissions(session)
 --     return { allow = { "your-cli-tool-pattern" }, deny = {} }
 -- end
 
@@ -220,8 +221,8 @@ echo "=== NEOVIM EDITOR CONTEXT ==="
 [ -f "$ACTIVE_DIR/role.md" ] && { echo "--- role.md ---"; cat "$ACTIVE_DIR/role.md"; echo; }
 [ -n "$CWD" ] && [ -f "$CWD/PROJECT.md" ] && { echo "--- PROJECT.md ---"; cat "$CWD/PROJECT.md"; echo; }
 
-# Semi-stable: flavor + pinned dirs + user notes
-for f in .flavor_meta.json persistent_dirs.json user_notes.md; do
+# Semi-stable: pinned dirs + user notes (mirrored from the agent definition)
+for f in persistent_dirs.json user_notes.md; do
     [ -f "$ACTIVE_DIR/$f" ] && { echo "--- $f ---"; cat "$ACTIVE_DIR/$f"; echo; }
 done
 

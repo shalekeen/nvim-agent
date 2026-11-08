@@ -1,3 +1,13 @@
+-- Per-Neovim-instance session registry.
+--
+-- A session is one running (or exited) agent: a name, the global agent it
+-- was built from, an active_dir mirroring that agent's files, and — while
+-- the CLI is running — a terminal buffer, window and job.
+--
+-- Liveness lives here; membership lives in the workspace manifest. A
+-- session whose CLI exits stays registered with state = "exited" so it can
+-- be relaunched into the same active_dir.
+
 local M = {}
 
 local config = require("nvim-agent.config")
@@ -33,55 +43,38 @@ end
 --- <cwd>/.nvim-agent/instances/<instance_id>/. It is forwarded to the agent
 --- CLI and MCP server as NVIM_AGENT_INSTANCE_ID / NVIM_AGENT_RUNTIME_DIR so
 --- two Neovim instances open on the same project never share peer state.
---- A UUID rather than the PID so ids stay unique across reboots / PID reuse
---- and stale dirs remain attributable to one specific launch.
 M.instance_id = generate_uuid()
 
---- Owning OS process id. Kept for diagnostics and adapter visibility only;
---- no path is derived from it.
+--- Owning OS process id. Diagnostics only; no path derives from it.
 M.window_id = vim.fn.getpid()
 
-M.sessions = {} -- keyed by compound string id, e.g. "485293847_main"
-M.current_id = nil -- compound string id of last-focused session
+M.sessions = {} -- keyed by compound string id "<instance_id>_<name>"
+M.current_id = nil -- id of the last-focused session
 
-local next_instance = 1 -- sequential counter (used for display ordering only)
+local next_instance = 1 -- creation counter, display ordering only
 
---- Path to the process-level shared directory for this Neovim instance.
---- All sessions within the same process share this directory (ephemeral.json lives here).
 local function process_dir_path()
 	return config.get().base_dir .. "/sessions/" .. M.instance_id
 end
 
---- Return the process-level shared directory path.
+--- Shared per-instance dir (ephemeral.json, tmux_captures.json live here).
 --- @return string
 function M.get_process_dir()
 	return process_dir_path()
 end
 
---- Create a new session with its own filesystem directory.
---- The first session in a process defaults to name "main" if no name is given.
---- All subsequent sessions require an explicit name.
---- Returns nil + error string on failure.
---- @param flavor string
---- @param checkpoint string|nil
---- @param name string|nil  User-chosen name; auto-set to "main" for the first session
+--- Create a session for `agent_name` under the session name `name`.
+--- Returns nil + error on a duplicate name.
+--- @param name string        Session name (unique within this instance)
+--- @param agent_name string  Global agent the session is built from
 --- @return table|nil, string|nil
-function M.create(flavor, checkpoint, name)
-	local sess_count = 0
-	for _ in pairs(M.sessions) do
-		sess_count = sess_count + 1
-	end
-
-	-- First session gets "main" by default; all others must be named
+function M.create(name, agent_name)
 	if not name or name == "" then
-		if sess_count == 0 then
-			name = "main"
-		else
-			return nil, "session name is required"
-		end
+		return nil, "session name is required"
 	end
-
-	-- Reject duplicate names within this process
+	if not agent_name or agent_name == "" then
+		return nil, "agent name is required"
+	end
 	for _, s in pairs(M.sessions) do
 		if s.name == name then
 			return nil, "session '" .. name .. "' already exists"
@@ -91,22 +84,21 @@ function M.create(flavor, checkpoint, name)
 	local instance_num = next_instance
 	next_instance = next_instance + 1
 
-	-- Compound ID uses name for uniqueness: <instance_id>_<name>
 	local id = M.instance_id .. "_" .. name
 	local pdir = process_dir_path()
 	local dir = pdir .. "/" .. name
 	local active_dir = dir .. "/active"
-	vim.fn.mkdir(active_dir, "p") -- also creates pdir via "p"
+	vim.fn.mkdir(active_dir, "p")
 
 	local session = {
-		id = id, -- compound string, used as table key
-		instance_num = instance_num, -- sequential int for display ordering only
-		name = name, -- user-visible identifier; used as dir name
-		instance_id = M.instance_id, -- which Neovim instance owns this session
-		window_id = M.window_id, -- owning process id (diagnostics only)
-		process_dir = pdir, -- shared process-level dir (ephemeral.json lives here)
-		flavor = flavor or "agent",
-		checkpoint = checkpoint,
+		id = id,
+		instance_num = instance_num,
+		name = name,
+		agent = agent_name,
+		state = "created", -- "created" | "running" | "exited"
+		instance_id = M.instance_id,
+		window_id = M.window_id,
+		process_dir = pdir,
 		dir = dir,
 		active_dir = active_dir,
 		bufnr = nil,
@@ -121,14 +113,12 @@ function M.create(flavor, checkpoint, name)
 	return session
 end
 
---- Get session by compound string ID.
---- @param id string  e.g. "485293847_main"
+--- @param id string
 --- @return table|nil
 function M.get(id)
 	return M.sessions[id]
 end
 
---- Get session by user-visible name (e.g. "main", "research").
 --- @param name string
 --- @return table|nil
 function M.get_by_name(name)
@@ -140,7 +130,18 @@ function M.get_by_name(name)
 	return nil
 end
 
---- Get the currently focused session (last agent terminal entered).
+--- @param active_dir string
+--- @return table|nil
+function M.get_by_active_dir(active_dir)
+	for _, sess in pairs(M.sessions) do
+		if sess.active_dir == active_dir then
+			return sess
+		end
+	end
+	return nil
+end
+
+--- Last-focused session, or nil.
 --- @return table|nil
 function M.get_current()
 	if M.current_id then
@@ -149,15 +150,14 @@ function M.get_current()
 	return nil
 end
 
---- Mark a session as current. Called on BufEnter of that session's terminal.
---- @param id string  Compound session ID
+--- @param id string
 function M.set_current(id)
 	if M.sessions[id] then
 		M.current_id = id
 	end
 end
 
---- Return all sessions owned by this process, sorted by creation order.
+--- All sessions in creation order.
 --- @return table[]
 function M.list()
 	local result = {}
@@ -170,7 +170,6 @@ function M.list()
 	return result
 end
 
---- Find a session by its terminal buffer number.
 --- @param bufnr number
 --- @return table|nil
 function M.find_by_bufnr(bufnr)
@@ -182,28 +181,58 @@ function M.find_by_bufnr(bufnr)
 	return nil
 end
 
---- Close a session: stop its job, delete its buffer, remove from registry,
---- and clean up the agent's status file so peers no longer see it.
---- @param id string  Compound session ID
+--- True while the CLI process is alive.
+--- @param sess table
+--- @return boolean
+function M.is_running(sess)
+	return sess ~= nil and sess.jobid ~= nil
+end
+
+--- Path of this session's peer-visible status file.
+--- @param sess table
+--- @return string
+function M.status_path(sess)
+	return require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd())
+		.. "/status/"
+		.. sess.name
+		.. ".json"
+end
+
+--- Delete the status file so peers stop discovering (and delegating to)
+--- this session. Called on close and on CLI exit.
+--- @param sess table
+function M.remove_status(sess)
+	local path = M.status_path(sess)
+	if vim.fn.filereadable(path) == 1 then
+		vim.fn.delete(path)
+	end
+end
+
+--- Record that the CLI process ended on its own. The session stays
+--- registered (it is still a workspace member) and can be relaunched.
+--- @param id string
+--- @param code number|nil  exit code
+function M.mark_exited(id, code)
+	local sess = M.sessions[id]
+	if not sess then
+		return
+	end
+	sess.jobid = nil
+	sess.state = "exited"
+	sess.exit_code = code
+	M.remove_status(sess)
+end
+
+--- Fully close a session: stop its job, delete its buffer, remove its
+--- status file and drop it from the registry. This is the liveness half of
+--- "remove from workspace"; the caller handles the manifest.
+--- @param id string
 function M.close(id)
 	local sess = M.sessions[id]
 	require("nvim-agent.terminal").cleanup(id)
-
-	-- Remove the agent's status file so peers stop discovering it.
-	-- We always check, regardless of whether the workspace dir still exists:
-	-- terminal.lua writes the status file unconditionally, so leaking it after
-	-- close would leave a phantom agent visible to any peer that still sees the
-	-- runtime dir. Scoped to THIS instance's runtime dir, so closing "main"
-	-- here never touches a same-named session in another Neovim.
 	if sess then
-		local workspace_mod = require("nvim-agent.workspace")
-		local cwd = vim.fn.getcwd()
-		local status_file = workspace_mod.instance_runtime_dir(cwd) .. "/status/" .. sess.name .. ".json"
-		if vim.fn.filereadable(status_file) == 1 then
-			vim.fn.delete(status_file)
-		end
+		M.remove_status(sess)
 	end
-
 	M.sessions[id] = nil
 	if M.current_id == id then
 		M.current_id = nil

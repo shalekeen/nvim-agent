@@ -1,390 +1,414 @@
--- Agent definitions and templates.
+-- Global agent library.
 --
--- An "agent" is a directory of files. The directory layout IS the schema —
--- there is no in-memory class, no agent registry table. Agents are stored at:
+-- An agent is a directory of files under ~/.nvim-agent/agents/<name>/.
+-- The directory layout IS the schema; there is no in-memory class.
 --
---   <cwd>/<def_dir>/agents/<name>/    project-scoped definitions (checked in)
---   ~/.nvim-agent/agent_templates/<name>/    global templates (reusable across projects)
+--   ~/.nvim-agent/agents/
+--     <name>/                      user-defined agent
+--       role.md                    REQUIRED — one short paragraph. Guides the
+--                                  agent's own behaviour (it opens the system
+--                                  prompt) AND is what peers see when deciding
+--                                  whom to delegate to.
+--       system_prompt.md           behaviour prompt (seeded from config.default_system_prompt)
+--       user_notes.md              standing user notes
+--       persistent_dirs.json       pinned code paths: [{ tag, path, description }]
+--       permissions.json           optional, adapter-specific tool permissions
+--     spawned/<name>/              agents created at runtime by the spawn_agent
+--                                  MCP tool; same files, listed in their own
+--                                  section so they don't crowd out your own.
 --
--- Each agent dir contains a subset of AGENT_FILES (system_prompt.md is
--- always seeded; the rest are optional and only materialise when the user
--- edits them). An optional .agent_meta.json may declare a template parent:
--- { "template": "<name>" }. At session launch, template files are copied
--- first, then the agent-specific files are overlaid on top (agent wins).
---
--- Dependency: this module reaches into workspace.lua only for def_dir(cwd)
--- — the workspace owns the definition-directory path, agents live inside it.
+-- Agents are the ONLY unit of definition. A project that wants a variant of
+-- an agent copies it under a new name (M.copy) and edits the copy. A live
+-- session's active/ dir is a mirror of its agent: edits made there are
+-- written straight back with M.save.
 
 local M = {}
 
-local workspace = require("nvim-agent.workspace")
+local config = require("nvim-agent.config")
+
+M.AGENT_FILES = {
+	"role.md",
+	"system_prompt.md",
+	"user_notes.md",
+	"persistent_dirs.json",
+	"permissions.json",
+}
+
+M.SPAWNED_DIRNAME = "spawned"
+
+local DEFAULT_NOTES = "# User Notes\n\nAdd behavioral notes here that you want the coding agent to respect.\n"
 
 ------------------------------------------------------------------------
--- Helpers (file JSON I/O — kept local to avoid leaking a generic util)
+-- File helpers
 ------------------------------------------------------------------------
 
-local function read_json(path)
+local function read_file(path)
 	local f = io.open(path, "r")
 	if not f then
 		return nil
 	end
 	local content = f:read("*a")
 	f:close()
-	if not content or content == "" then
-		return nil
-	end
-	local ok, data = pcall(vim.json.decode, content)
-	return (ok and type(data) == "table") and data or nil
+	return content
 end
 
---- Atomically write JSON to `path`: writes to <path>.tmp, then renames. A crash
---- mid-write therefore leaves the previous (valid) file intact rather than a
---- truncated/half-written one that read_json would silently treat as missing.
-local function write_json(path, data)
-	local tmp = path .. ".tmp"
-	local f = io.open(tmp, "w")
+local function write_file(path, content)
+	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+	local f = io.open(path, "w")
 	if not f then
-		vim.notify("nvim-agent: failed to write " .. path, vim.log.levels.ERROR)
 		return false
 	end
-	f:write(vim.json.encode(data))
+	f:write(content)
 	f:close()
-	local ok, err = os.rename(tmp, path)
-	if not ok then
-		os.remove(tmp)
-		vim.notify(
-			"nvim-agent: failed to rename " .. tmp .. " → " .. path .. ": " .. tostring(err),
-			vim.log.levels.ERROR
-		)
-		return false
+	return true
+end
+
+local function copy_if_present(src, dst)
+	if vim.fn.filereadable(src) == 1 then
+		vim.fn.mkdir(vim.fn.fnamemodify(dst, ":h"), "p")
+		vim.fn.writefile(vim.fn.readfile(src, "b"), dst, "b")
+		return true
+	end
+	return false
+end
+
+local function is_blank(s)
+	return s == nil or s:match("^%s*$") ~= nil
+end
+
+------------------------------------------------------------------------
+-- Paths
+------------------------------------------------------------------------
+
+--- @return string  ~/.nvim-agent/agents
+function M.base_dir()
+	return config.get().base_dir .. "/agents"
+end
+
+--- @return string  ~/.nvim-agent/agents/spawned
+function M.spawned_dir()
+	return M.base_dir() .. "/" .. M.SPAWNED_DIRNAME
+end
+
+--- Validate an agent name: non-empty, no path separators, not reserved.
+--- @param name any
+--- @return boolean, string|nil
+function M.validate_name(name)
+	if type(name) ~= "string" or name == "" then
+		return false, "agent name is required"
+	end
+	if name:find("/", 1, true) or name:find("\\", 1, true) then
+		return false, "agent name may not contain path separators"
+	end
+	if name:match("^%.") then
+		return false, "agent name may not start with '.'"
+	end
+	if name == M.SPAWNED_DIRNAME then
+		return false, "'" .. M.SPAWNED_DIRNAME .. "' is reserved"
 	end
 	return true
 end
 
-------------------------------------------------------------------------
--- The canonical set of files an agent definition may contain.
--- Exported so other modules (adapters, tests) can iterate it without
--- duplicating the list.
-------------------------------------------------------------------------
-
-M.AGENT_FILES = {
-	"system_prompt.md",
-	"agent_prompt.md",
-	"user_notes.md",
-	"persistent_dirs.json",
-	".flavor_meta.json",
-	"role.md",
-	"permissions.json",
-}
-
-------------------------------------------------------------------------
--- Agent definition dirs  (<def_dir>/agents/<name>/)
-------------------------------------------------------------------------
-
---- Return the path to an agent's definition directory, or nil if no def_dir.
+--- Directory an agent WOULD live in (does not check existence).
 --- @param name string
---- @param cwd string|nil
---- @return string|nil
-function M.content_dir(name, cwd)
-	local dd = workspace.def_dir(cwd)
-	if not dd then
-		return nil
+--- @param spawned boolean|nil
+--- @return string
+function M.dir(name, spawned)
+	if spawned then
+		return M.spawned_dir() .. "/" .. name
 	end
-	return dd .. "/agents/" .. name
+	return M.base_dir() .. "/" .. name
 end
 
---- List all agents defined in the definition directory.
---- @param cwd string|nil
---- @return table[]  { { name = string } }
-function M.list(cwd)
-	local dd = workspace.def_dir(cwd)
-	if not dd then
+--- Resolve an agent by name. User agents shadow spawned ones.
+--- @param name string
+--- @return string|nil dir, boolean|nil spawned
+function M.resolve(name)
+	local ok = M.validate_name(name)
+	if not ok then
+		return nil
+	end
+	local user_dir = M.dir(name, false)
+	if vim.fn.isdirectory(user_dir) == 1 then
+		return user_dir, false
+	end
+	local spawned_dir = M.dir(name, true)
+	if vim.fn.isdirectory(spawned_dir) == 1 then
+		return spawned_dir, true
+	end
+	return nil
+end
+
+--- @param name string
+--- @return boolean
+function M.exists(name)
+	return M.resolve(name) ~= nil
+end
+
+------------------------------------------------------------------------
+-- Listing
+------------------------------------------------------------------------
+
+local function list_dir(base, spawned)
+	if vim.fn.isdirectory(base) ~= 1 then
 		return {}
 	end
-	local subdirs = vim.fn.glob(dd .. "/agents/*/", false, true)
-	local agents = {}
-	for _, path in ipairs(subdirs) do
-		local name = path:match("/([^/]+)/$")
-		if name then
-			table.insert(agents, { name = name })
+	local out = {}
+	for _, entry in ipairs(vim.fn.readdir(base)) do
+		local path = base .. "/" .. entry
+		if
+			not entry:match("^%.")
+			and entry ~= M.SPAWNED_DIRNAME
+			and vim.fn.isdirectory(path) == 1
+		then
+			table.insert(out, {
+				name = entry,
+				spawned = spawned,
+				role = M.read_role(entry, spawned),
+			})
 		end
 	end
-	table.sort(agents, function(a, b)
+	table.sort(out, function(a, b)
 		return a.name < b.name
 	end)
-	return agents
+	return out
 end
 
---- Return { name } if the agent directory exists, nil otherwise.
+--- List every agent. User-defined agents first (sorted), then spawned ones
+--- (sorted), so UIs can render the two sections in order.
+--- @return table[]  { { name, spawned = boolean, role = string|nil } }
+function M.list()
+	local all = list_dir(M.base_dir(), false)
+	for _, a in ipairs(list_dir(M.spawned_dir(), true)) do
+		table.insert(all, a)
+	end
+	return all
+end
+
+--- Read an agent's role text (trailing whitespace trimmed), or nil.
 --- @param name string
---- @param cwd string|nil
---- @return table|nil
-function M.get(name, cwd)
-	local dir = M.content_dir(name, cwd)
-	if not dir or vim.fn.isdirectory(dir) == 0 then
+--- @param spawned boolean|nil  nil → resolve
+--- @return string|nil
+function M.read_role(name, spawned)
+	local dir
+	if spawned == nil then
+		dir = M.resolve(name)
+	else
+		dir = M.dir(name, spawned)
+	end
+	if not dir then
 		return nil
 	end
-	return { name = name }
+	local role = read_file(dir .. "/role.md")
+	if is_blank(role) then
+		return nil
+	end
+	return (role:gsub("%s+$", ""))
 end
 
---- Create an agent definition directory. Seeds an empty system_prompt.md so
---- the file is immediately editable; all other AGENT_FILES are created
---- lazily by the user (or by save_content from a live session).
+--- Role placeholder written for agents imported from the legacy layout, which
+--- never had a mandatory role. Pickers surface it so the user fills it in.
 --- @param name string
---- @param cwd string|nil
---- @return boolean
-function M.create(name, cwd)
-	local dir = M.content_dir(name, cwd)
-	if not dir then
-		vim.notify("nvim-agent: no workspace initialized", vim.log.levels.WARN)
-		return false
+--- @return string
+function M.placeholder_role(name)
+	return name .. " (describe this agent's role)"
+end
+
+------------------------------------------------------------------------
+-- Create / copy / delete
+------------------------------------------------------------------------
+
+--- Create a new agent.
+--- @param name string
+--- @param opts table  {
+---   role = string            REQUIRED
+---   system_prompt = string   default: config.default_system_prompt
+---   user_notes = string      default: a short "# User Notes" stub
+---   persistent_dirs = string default: "[]"
+---   spawned = boolean        default: false
+--- }
+--- @return boolean ok, string|nil err
+function M.create(name, opts)
+	opts = opts or {}
+	local ok, err = M.validate_name(name)
+	if not ok then
+		return false, err
 	end
+	if is_blank(opts.role) then
+		return false, "role is required: a short description of what this agent does"
+	end
+	if M.exists(name) then
+		return false, "agent '" .. name .. "' already exists"
+	end
+
+	local dir = M.dir(name, opts.spawned)
 	vim.fn.mkdir(dir, "p")
-	local sp = dir .. "/system_prompt.md"
-	if vim.fn.filereadable(sp) == 0 then
-		local f = io.open(sp, "w")
-		if f then
-			f:write("")
-			f:close()
-		end
+	local cfg = config.get()
+	write_file(dir .. "/role.md", opts.role:gsub("%s+$", "") .. "\n")
+	write_file(dir .. "/system_prompt.md", opts.system_prompt or cfg.default_system_prompt or "")
+	write_file(dir .. "/user_notes.md", opts.user_notes or DEFAULT_NOTES)
+	write_file(dir .. "/persistent_dirs.json", opts.persistent_dirs or "[]")
+	return true
+end
+
+--- Copy an agent to a new name. The copy is always a user agent (even when
+--- the source is spawned) — copying is how you "adopt" a spawned agent or
+--- make a project-specific variant.
+--- @param src string
+--- @param dst string
+--- @return boolean ok, string|nil err
+function M.copy(src, dst)
+	local src_dir = M.resolve(src)
+	if not src_dir then
+		return false, "agent '" .. src .. "' not found"
+	end
+	local ok, err = M.validate_name(dst)
+	if not ok then
+		return false, err
+	end
+	if M.exists(dst) then
+		return false, "agent '" .. dst .. "' already exists"
+	end
+	local dst_dir = M.dir(dst, false)
+	vim.fn.mkdir(dst_dir, "p")
+	for _, f in ipairs(M.AGENT_FILES) do
+		copy_if_present(src_dir .. "/" .. f, dst_dir .. "/" .. f)
 	end
 	return true
 end
 
---- Delete an agent's definition directory AND remove it from every
---- workspace manifest that referenced it (workspace.lua owns that
---- manifest mutation; we delegate via require).
+--- Delete an agent definition.
 --- @param name string
---- @param cwd string|nil
---- @return boolean
-function M.delete(name, cwd)
-	local dir = M.content_dir(name, cwd)
-	if not dir or vim.fn.isdirectory(dir) == 0 then
-		vim.notify("nvim-agent: agent '" .. name .. "' not found", vim.log.levels.WARN)
-		return false
+--- @return boolean ok, string|nil err
+function M.delete(name)
+	local dir = M.resolve(name)
+	if not dir then
+		return false, "agent '" .. name .. "' not found"
 	end
 	vim.fn.delete(dir, "rf")
-	workspace.remove_agent_from_workspaces(name, cwd)
-	vim.notify("nvim-agent: agent '" .. name .. "' deleted", vim.log.levels.INFO)
 	return true
 end
 
---- Copy AGENT_FILES from a live session's active_dir into the agent's
---- definition dir. Call this to persist changes made during a session
---- back to the checked-in definition.
---- @param name string        Agent name
---- @param active_dir string  Session active_dir to read from
---- @param cwd string|nil
-function M.save_content(name, active_dir, cwd)
-	local dir = M.content_dir(name, cwd)
+------------------------------------------------------------------------
+-- Session mirroring
+------------------------------------------------------------------------
+
+--- Copy an agent's files into a session active_dir. Files the agent does not
+--- define are left alone (context.write_all seeds safe fallbacks for them).
+--- @param name string
+--- @param target_dir string
+--- @return boolean ok, string|nil err
+function M.load(name, target_dir)
+	local dir = M.resolve(name)
 	if not dir then
+		return false, "agent '" .. name .. "' not found"
+	end
+	vim.fn.mkdir(target_dir, "p")
+	for _, f in ipairs(M.AGENT_FILES) do
+		copy_if_present(dir .. "/" .. f, target_dir .. "/" .. f)
+	end
+	return true
+end
+
+--- Write a session active_dir back into its agent definition. Only files
+--- present in the source are written; nothing is deleted from the agent.
+--- The agent must already exist — this never creates one.
+--- @param name string
+--- @param source_dir string
+--- @return boolean ok, string|nil err
+function M.save(name, source_dir)
+	local dir = M.resolve(name)
+	if not dir then
+		return false, "agent '" .. name .. "' not found"
+	end
+	for _, f in ipairs(M.AGENT_FILES) do
+		copy_if_present(source_dir .. "/" .. f, dir .. "/" .. f)
+	end
+	return true
+end
+
+------------------------------------------------------------------------
+-- Legacy migration  (flavors + agent_templates → agents/)
+------------------------------------------------------------------------
+
+-- Names under base_dir that are plugin-owned, never agent sources.
+local LEGACY_RESERVED = {
+	agents = true,
+	sessions = true,
+	hooks = true,
+	agent_templates = true,
+	last_flavor = true,
+	active = true,
+}
+
+local function import_definition_dir(src, name, report)
+	if M.exists(name) then
+		table.insert(report.skipped, name)
 		return
 	end
-	vim.fn.mkdir(dir, "p")
+	if vim.fn.filereadable(src .. "/system_prompt.md") ~= 1 then
+		return
+	end
+	local dst = M.dir(name, false)
+	vim.fn.mkdir(dst, "p")
 	for _, f in ipairs(M.AGENT_FILES) do
-		local src = active_dir .. "/" .. f
-		if vim.fn.filereadable(src) == 1 then
-			vim.fn.writefile(vim.fn.readfile(src), dir .. "/" .. f)
+		copy_if_present(src .. "/" .. f, dst .. "/" .. f)
+	end
+	if is_blank(read_file(dst .. "/role.md")) then
+		write_file(dst .. "/role.md", M.placeholder_role(name) .. "\n")
+		table.insert(report.needs_role, name)
+	end
+	if vim.fn.filereadable(dst .. "/user_notes.md") ~= 1 then
+		write_file(dst .. "/user_notes.md", DEFAULT_NOTES)
+	end
+	if vim.fn.filereadable(dst .. "/persistent_dirs.json") ~= 1 then
+		write_file(dst .. "/persistent_dirs.json", "[]")
+	end
+	table.insert(report.imported, name)
+end
+
+--- One-time import of the pre-2.0 global layout:
+---   ~/.nvim-agent/<flavor>/            (base files only; checkpoints/ ignored)
+---   ~/.nvim-agent/agent_templates/<t>/
+--- into ~/.nvim-agent/agents/. Sources are COPIED, never moved or deleted,
+--- so nothing is lost; a stamp file prevents re-running. Returns the report
+--- (or nil when already migrated / nothing to do) so setup can notify once.
+--- @return table|nil  { imported = string[], skipped = string[], needs_role = string[] }
+function M.migrate_legacy()
+	local base = config.get().base_dir
+	local stamp = base .. "/.agents_migrated"
+	if vim.fn.filereadable(stamp) == 1 then
+		return nil
+	end
+	if vim.fn.isdirectory(base) ~= 1 then
+		return nil
+	end
+
+	local report = { imported = {}, skipped = {}, needs_role = {} }
+
+	for _, entry in ipairs(vim.fn.readdir(base)) do
+		local path = base .. "/" .. entry
+		if not LEGACY_RESERVED[entry] and not entry:match("^%.") and vim.fn.isdirectory(path) == 1 then
+			import_definition_dir(path, entry, report)
 		end
 	end
-end
 
---- Copy AGENT_FILES from the agent's definition dir into target_dir
---- (a session's active_dir). If the agent's .agent_meta.json declares a
---- template, the template is loaded first and then the agent's own files
---- are overlaid on top — agent overrides win on conflict.
---- @param name string        Agent name
---- @param target_dir string  Destination (session active_dir)
---- @param cwd string|nil
---- @return boolean           true if any agent files were copied
-function M.load_content(name, target_dir, cwd)
-	local dir = M.content_dir(name, cwd)
-	if not dir or vim.fn.isdirectory(dir) == 0 then
-		return false
-	end
-
-	-- 1. Template overlay (if linked)
-	local meta = read_json(dir .. "/.agent_meta.json")
-	if meta and meta.template then
-		M.template_load(meta.template, target_dir)
-	end
-
-	-- 2. Agent-specific files on top (agent wins)
-	local found_any = false
-	for _, f in ipairs(M.AGENT_FILES) do
-		local src = dir .. "/" .. f
-		if vim.fn.filereadable(src) == 1 then
-			vim.fn.writefile(vim.fn.readfile(src), target_dir .. "/" .. f)
-			found_any = true
-		end
-	end
-	return found_any
-end
-
-------------------------------------------------------------------------
--- Agent templates  (~/.nvim-agent/agent_templates/<name>/)
---
--- Templates are global, reusable agent definitions shared across projects.
--- An agent references a template via .agent_meta.json: { "template": "<n>" }.
-------------------------------------------------------------------------
-
---- Return the base directory holding all global agent templates.
---- @return string
-function M.template_base_dir()
-	return require("nvim-agent.config").get().base_dir .. "/agent_templates"
-end
-
---- Return the path to a specific template directory.
---- @param name string
---- @return string
-function M.template_dir(name)
-	return M.template_base_dir() .. "/" .. name
-end
-
---- List all available agent templates (sorted by name).
---- @return string[]
-function M.template_list()
-	local base = M.template_base_dir()
-	if vim.fn.isdirectory(base) == 0 then
-		return {}
-	end
-	local entries = vim.fn.readdir(base)
-	local templates = {}
-	for _, entry in ipairs(entries) do
-		if not entry:match("^%.") and vim.fn.isdirectory(base .. "/" .. entry) == 1 then
-			table.insert(templates, entry)
-		end
-	end
-	table.sort(templates)
-	return templates
-end
-
---- Create a new agent template by copying AGENT_FILES from a source dir
---- (typically an existing agent's def dir).
---- @param name string       Template name
---- @param source_dir string Directory to copy files from
---- @return boolean
-function M.template_create(name, source_dir)
-	local dir = M.template_dir(name)
-	vim.fn.mkdir(dir, "p")
-	for _, f in ipairs(M.AGENT_FILES) do
-		local src = source_dir .. "/" .. f
-		if vim.fn.filereadable(src) == 1 then
-			vim.fn.writefile(vim.fn.readfile(src), dir .. "/" .. f)
-		end
-	end
-	vim.notify("nvim-agent: template '" .. name .. "' created", vim.log.levels.INFO)
-	return true
-end
-
---- Delete an agent template.
---- Warns if any agents in the current workspace reference it (they will keep
---- working — their def dirs already hold a merged copy from prior launches).
---- @param name string
---- @param cwd string|nil
---- @return boolean
-function M.template_delete(name, cwd)
-	local dir = M.template_dir(name)
-	if vim.fn.isdirectory(dir) == 0 then
-		vim.notify("nvim-agent: template '" .. name .. "' not found", vim.log.levels.WARN)
-		return false
-	end
-
-	if workspace.has_workspace(cwd) then
-		local linked = {}
-		for _, a in ipairs(M.list(cwd)) do
-			if M.get_template(a.name, cwd) == name then
-				table.insert(linked, a.name)
+	local tpl_base = base .. "/agent_templates"
+	if vim.fn.isdirectory(tpl_base) == 1 then
+		for _, entry in ipairs(vim.fn.readdir(tpl_base)) do
+			local path = tpl_base .. "/" .. entry
+			if not entry:match("^%.") and vim.fn.isdirectory(path) == 1 then
+				import_definition_dir(path, entry, report)
 			end
 		end
-		if #linked > 0 then
-			vim.notify(
-				string.format(
-					"nvim-agent: warning — %d agent(s) reference template '%s': %s\n"
-						.. "Their def dirs already contain merged content from prior launches, so they will continue to work.",
-					#linked,
-					name,
-					table.concat(linked, ", ")
-				),
-				vim.log.levels.WARN
-			)
-		end
 	end
 
-	vim.fn.delete(dir, "rf")
-	vim.notify("nvim-agent: template '" .. name .. "' deleted", vim.log.levels.INFO)
-	return true
-end
+	write_file(stamp, os.date("%Y-%m-%dT%H:%M:%S") .. "\n")
 
---- Copy template files into a target directory. Does NOT overlay anything
---- on top — callers (typically load_content) handle layering.
---- @param name string       Template name
---- @param target_dir string Destination directory
---- @return boolean
-function M.template_load(name, target_dir)
-	local dir = M.template_dir(name)
-	if vim.fn.isdirectory(dir) == 0 then
-		return false
-	end
-	for _, f in ipairs(M.AGENT_FILES) do
-		local src = dir .. "/" .. f
-		if vim.fn.filereadable(src) == 1 then
-			vim.fn.writefile(vim.fn.readfile(src), target_dir .. "/" .. f)
-		end
-	end
-	return true
-end
-
---- Link an agent to a template by writing/updating .agent_meta.json.
---- Passing template_name = nil clears the link.
---- @param agent_name string
---- @param template_name string|nil
---- @param cwd string|nil
-function M.set_template(agent_name, template_name, cwd)
-	local dir = M.content_dir(agent_name, cwd)
-	if not dir then
-		return
-	end
-	vim.fn.mkdir(dir, "p")
-	local meta_path = dir .. "/.agent_meta.json"
-	local meta = read_json(meta_path) or {}
-	meta.template = template_name
-	write_json(meta_path, meta)
-end
-
---- Return the template name an agent is linked to, or nil.
---- @param agent_name string
---- @param cwd string|nil
---- @return string|nil
-function M.get_template(agent_name, cwd)
-	local dir = M.content_dir(agent_name, cwd)
-	if not dir then
+	if #report.imported == 0 and #report.skipped == 0 then
 		return nil
 	end
-	local meta = read_json(dir .. "/.agent_meta.json")
-	return meta and meta.template
-end
-
---- Ensure `<def_dir>/.flavor_meta.json` exists for `agent_name`. If missing,
---- writes a default `{ flavor = agent_name, checkpoint = nil }` so the next
---- workspace_launch can skip the flavor picker (its gate is the presence of
---- that file). No-op if the file already exists or the workspace isn't
---- initialized.
----
---- This is the symmetric counterpart to flavor.write_meta but lives on the
---- agent module because the marker conceptually belongs to the agent
---- definition, not to any particular session's active_dir.
---- @param agent_name string
---- @param cwd string|nil
-function M.ensure_flavor_meta(agent_name, cwd)
-	local def_dir = M.content_dir(agent_name, cwd)
-	if not def_dir then
-		return
-	end
-	if vim.fn.filereadable(def_dir .. "/.flavor_meta.json") == 1 then
-		return
-	end
-	require("nvim-agent.flavor").write_meta(agent_name, nil, def_dir)
+	return report
 end
 
 return M

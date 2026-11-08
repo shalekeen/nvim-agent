@@ -1,9 +1,25 @@
 local M = {}
 
+--- Write a session's active_dir back into its global agent definition. The
+--- active_dir is a mirror of the agent, so any edit made there (notes,
+--- pinned dirs, prompt, role) is the agent's new definition.
+--- @param sess table
+--- @param silent boolean|nil
+function M.sync_session_to_agent(sess, silent)
+	if not sess or not sess.agent then
+		return
+	end
+	local ok, err = require("nvim-agent.agent").save(sess.agent, sess.active_dir)
+	if not ok then
+		vim.notify("nvim-agent: could not sync to agent '" .. sess.agent .. "': " .. tostring(err), vim.log.levels.WARN)
+	elseif not silent then
+		vim.notify("nvim-agent: context saved to agent '" .. sess.agent .. "'", vim.log.levels.INFO)
+	end
+end
+
 function M.register()
 	-- Idempotent: if register() is invoked twice (e.g. plugin reload), the old
-	-- timers must be stopped before we allocate new ones, or they'll keep
-	-- firing against torn-down state.
+	-- timers must be stopped before we allocate new ones.
 	for _, timer_key in ipairs({ "_continuation_timer", "_msg_timer" }) do
 		local t = M[timer_key]
 		if t then
@@ -18,9 +34,8 @@ function M.register()
 	local group = vim.api.nvim_create_augroup("NvimAgent", { clear = true })
 	local config = require("nvim-agent.config")
 
-	-- Write all context files when entering an agent terminal buffer.
-	-- Identifies the owning session from the buffer number, marks it current,
-	-- and updates ephemeral context for ALL sessions so every agent stays fresh.
+	-- Refresh ephemeral context when entering an agent terminal buffer and
+	-- mark that session current.
 	vim.api.nvim_create_autocmd("BufEnter", {
 		group = group,
 		callback = function(ev)
@@ -33,13 +48,10 @@ function M.register()
 
 				if config.get().auto_write_context and sess then
 					vim.schedule(function()
-						-- Ephemeral is written once to process_dir — shared by all sessions
-						-- in this Neovim process, so no need to update other sessions.
 						require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
 					end)
 				end
 
-				-- Call adapter's on_enter hook
 				vim.schedule(function()
 					local adapter = require("nvim-agent.adapter").get_active()
 					if adapter and adapter.on_enter then
@@ -51,7 +63,7 @@ function M.register()
 		desc = "nvim-agent: write context on agent buffer enter",
 	})
 
-	-- Warn when quitting with actively-running agent jobs.
+	-- Warn when quitting with running agents.
 	vim.api.nvim_create_autocmd("QuitPre", {
 		group = group,
 		callback = function()
@@ -76,7 +88,8 @@ function M.register()
 		desc = "nvim-agent: warn on quit with running agents",
 	})
 
-	-- On exit: auto-save workspace sessions' state → def dir, then stop jobs and timers.
+	-- On exit: final sync of every session back to its agent, then stop jobs,
+	-- drop status files and timers.
 	vim.api.nvim_create_autocmd("VimLeavePre", {
 		group = group,
 		callback = function()
@@ -91,48 +104,35 @@ function M.register()
 
 			local ok, session_mod = pcall(require, "nvim-agent.session")
 			if ok then
-				local cwd = vim.fn.getcwd()
-				local ok_ws, workspace_mod = pcall(require, "nvim-agent.workspace")
-				local ok_agent, agent_mod = pcall(require, "nvim-agent.agent")
 				for _, sess in ipairs(session_mod.list()) do
-					-- Persist active_dir → workspace def dir, but only for sessions
-					-- that are real workspace agents. A standalone session opened
-					-- inside a workspace project must not be written into the
-					-- checked-in definitions directory on exit.
-					if
-						ok_ws
-						and ok_agent
-						and workspace_mod.has_workspace(cwd)
-						and agent_mod.get(sess.name, cwd)
-					then
-						pcall(agent_mod.save_content, sess.name, sess.active_dir, cwd)
-					end
+					pcall(M.sync_session_to_agent, sess, true)
+					pcall(session_mod.remove_status, sess)
 					require("nvim-agent.terminal").cleanup(sess.id)
 				end
 			end
 		end,
-		desc = "nvim-agent: save state and cleanup all agent terminals on exit",
+		desc = "nvim-agent: sync agents and clean up terminals on exit",
 	})
 
-	-- Visual indicator when any session's context files are manually edited and saved
+	-- A session's active/ dir mirrors its agent definition: saving any file
+	-- in it writes the agent. Covers :NvimAgent edit prompt|notes|dirs|role.
 	vim.api.nvim_create_autocmd("BufWritePost", {
 		group = group,
 		pattern = config.get().base_dir .. "/sessions/*/*/active/*",
-		callback = function()
-			vim.notify("nvim-agent: context file updated", vim.log.levels.INFO)
+		callback = function(ev)
+			local active_dir = vim.fn.fnamemodify(ev.file, ":h")
+			local sess = require("nvim-agent.session").get_by_active_dir(active_dir)
+			if sess then
+				M.sync_session_to_agent(sess)
+			end
 		end,
-		desc = "nvim-agent: notify on context file save",
+		desc = "nvim-agent: sync edited context file to its agent",
 	})
 
 	-- Continuation timer: every 30 s, check each agent terminal.
 	-- When a terminal has been idle (changedtick unchanged) and has a pending
 	-- trigger or message file, send a wakeup to resume inference.
-	-- This prevents agents from silently stopping mid-task.
 	M._session_ticks = {}
-	-- Track the mtime of each session's message file we last fired a wake-up
-	-- for. Without this we'd re-trigger every 30 s as long as the file is
-	-- non-empty, even after the agent has acknowledged the wake-up but before
-	-- read_messages truncates it.
 	M._handled_msg_mtime = {}
 	M._continuation_timer = vim.loop.new_timer()
 	M._continuation_timer:start(
@@ -154,7 +154,7 @@ function M.register()
 
 			for _, sess in ipairs(session_mod.list()) do
 				local bufnr = sess.bufnr
-				if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+				if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) or not sess.jobid then
 					M._session_ticks[sess.id] = nil
 					M._handled_msg_mtime[sess.id] = nil
 				else
@@ -162,16 +162,11 @@ function M.register()
 					local prev_tick = M._session_ticks[sess.id]
 					M._session_ticks[sess.id] = tick
 
-					-- Terminal is idle when output hasn't changed since last poll
 					if prev_tick and tick == prev_tick then
 						local trigger_file = trigger_dir .. "/" .. sess.name .. ".md"
 						local msg_file = msg_dir .. "/" .. sess.name .. ".md"
 						local has_trigger = vim.fn.getfsize(trigger_file) > 0
 
-						-- Re-fire the message wake-up only when the mailbox has
-						-- been written to since we last fired. Use nanosecond
-						-- precision so two writes in the same second don't
-						-- collide on second-only granularity.
 						local msg_stat = vim.loop.fs_stat(msg_file)
 						local msg_mtime = nil
 						if msg_stat and (msg_stat.size or 0) > 0 and msg_stat.mtime then
@@ -182,20 +177,13 @@ function M.register()
 						if has_trigger or has_new_messages then
 							terminal.send(sess.id, "You have pending messages or tasks. Please continue your work.\r")
 							if has_trigger then
-								-- Lock the trigger file: an MCP-side trigger_agent
-								-- may be appending right now; without the lock our
-								-- truncate could clobber its write.
-								-- Use a short retry budget so the editor's timer
-								-- callback doesn't stall on contention; if we fail
-								-- to lock, we still truncate (worst case is one
-								-- racing MCP trigger write being lost — the agent
-								-- still has the message in its mailbox).
+								-- Lock the trigger file: an MCP-side trigger_agent may
+								-- be appending right now. Short retry budget so the
+								-- timer never stalls; on lock failure we still truncate
+								-- (the agent still has the message in its mailbox).
 								local ok_lock, filelock = pcall(require, "nvim-agent.mcp.filelock")
 								local got = ok_lock
-									and filelock.acquire(
-										trigger_file,
-										{ agent = "nvim-autocmd", retries = 1, delay_ms = 50 }
-									)
+									and filelock.acquire(trigger_file, { agent = "nvim-autocmd", retries = 1, delay_ms = 50 })
 								local f = io.open(trigger_file, "w")
 								if f then
 									f:close()
@@ -214,12 +202,8 @@ function M.register()
 		end)
 	)
 
-	-- Poll every 30 s for new messages addressed to the current session.
-	-- Messages live in <instance_runtime_dir>/messages/<name>.md — scoped to
-	-- this Neovim instance so peers in other instances of the same project
-	-- never land in our mailbox. This timer only surfaces a Neovim
-	-- notification; the full content is injected into the agent's context by
-	-- the adapter's pre-prompt hook.
+	-- Poll every 30 s for new messages addressed to the current session and
+	-- surface a notification. Content is injected by the adapter's hook.
 	M._msg_timer = vim.loop.new_timer()
 	M._msg_timer:start(
 		30000,
@@ -234,8 +218,7 @@ function M.register()
 				return
 			end
 
-			local cwd = vim.fn.getcwd()
-			local msg_file = require("nvim-agent.workspace").instance_runtime_dir(cwd)
+			local msg_file = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd())
 				.. "/messages/"
 				.. sess.name
 				.. ".md"

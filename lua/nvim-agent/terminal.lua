@@ -19,7 +19,7 @@ local function is_win_valid(sess)
 end
 
 local function buf_name(sess)
-	return string.format("[Agent-%s: %s]", sess.name, sess.flavor or "agent")
+	return string.format("[Agent-%s: %s]", sess.name, sess.agent or "agent")
 end
 
 --- Pin an agent buffer to the left in barbar using internal state API.
@@ -64,9 +64,6 @@ end
 
 --- Scroll a terminal buffer to the bottom after a delay.
 --- Waits for the CLI tool to load before jumping to the last line.
---- @param bufnr number  Buffer number
---- @param winnr number  Window number
---- @param delay_ms number|nil  Delay in ms (default 5000)
 local function scroll_to_bottom(bufnr, winnr, delay_ms)
 	vim.defer_fn(function()
 		if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
@@ -81,9 +78,9 @@ local function scroll_to_bottom(bufnr, winnr, delay_ms)
 end
 
 --- Spawn the adapter CLI for `sess` inside the given window. Creates the
---- terminal buffer, sets the buffer name and filetype, pins it in barbar, runs
---- adapter buffer-keymap setup, and scrolls to bottom. Used by both M.open's
---- single-session path and M.open_grid's per-cell path.
+--- terminal buffer, names it, pins it in barbar, runs adapter buffer-keymap
+--- setup, and scrolls to bottom. Used by M.open (single session, and
+--- relaunch of an exited session) and M.open_grid (per cell).
 local function launch_session_in_window(sess, win, adapter)
 	require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
 
@@ -111,16 +108,27 @@ local function launch_session_in_window(sess, win, adapter)
 		},
 		on_exit = function(_, code, _)
 			vim.schedule(function()
-				if code ~= 0 then
-					vim.notify(
-						string.format("nvim-agent: session '%s' exited with code %d", sess.name, code),
-						vim.log.levels.WARN
-					)
-				end
-				sess.jobid = nil
+				-- The CLI ended on its own (user typed /exit, crash, ...).
+				-- The session stays a workspace member but is marked exited
+				-- and its status file is removed so peers stop delegating to
+				-- it. It can be relaunched with :NvimAgent agent restart or
+				-- by a peer calling spawn_agent with the same name.
+				require("nvim-agent.session").mark_exited(sess.id, code)
+				local level = code == 0 and vim.log.levels.INFO or vim.log.levels.WARN
+				vim.notify(
+					string.format(
+						"nvim-agent: agent '%s' exited (code %d). Relaunch with :NvimAgent agent restart %s",
+						sess.name,
+						code,
+						sess.name
+					),
+					level
+				)
 			end)
 		end,
 	})
+	sess.state = "running"
+	sess.exit_code = nil
 
 	vim.api.nvim_buf_set_name(sess.bufnr, buf_name(sess))
 	vim.bo[sess.bufnr].filetype = "nvim-agent"
@@ -133,10 +141,13 @@ local function launch_session_in_window(sess, win, adapter)
 	scroll_to_bottom(sess.bufnr, win)
 end
 
+--- Open (or focus) a session's terminal. If the session's CLI has exited,
+--- this relaunches it into the same active_dir in a fresh terminal buffer.
+--- @param session_id string|nil  defaults to the current session
 function M.open(session_id)
 	local sess = get_session(session_id)
 	if not sess then
-		vim.notify("nvim-agent: no session available. Select a flavor first.", vim.log.levels.ERROR)
+		vim.notify("nvim-agent: no session available. Load a workspace first.", vim.log.levels.ERROR)
 		return
 	end
 
@@ -149,33 +160,43 @@ function M.open(session_id)
 		return
 	end
 
-	-- Write context before opening
+	local session_mod = require("nvim-agent.session")
 	require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
 
-	if is_buf_valid(sess) then
+	if is_buf_valid(sess) and session_mod.is_running(sess) then
 		if is_win_valid(sess) then
-			-- Already open, focus it
 			vim.api.nvim_set_current_win(sess.winnr)
 		else
-			-- Buffer exists but window closed, reopen in split
 			sess.winnr = create_split()
 			vim.api.nvim_win_set_buf(sess.winnr, sess.bufnr)
 		end
-		-- Refresh context on re-focus too, for consistency with the BufEnter autocmd.
-		require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
 		vim.cmd("startinsert")
 		return
 	end
 
-	launch_session_in_window(sess, create_split(), adapter)
+	-- Not running: either never launched, or exited. Launch afresh, reusing
+	-- the window if it is still open. The dead terminal buffer must go
+	-- BEFORE the new one is named (it still owns the "[Agent-…]" name), but
+	-- deleting the only buffer in a window closes the window — so park a
+	-- throwaway scratch buffer in the window first.
+	local old_buf = is_buf_valid(sess) and sess.bufnr or nil
+	sess.bufnr = nil
+	if old_buf then
+		if is_win_valid(sess) then
+			local scratch = vim.api.nvim_create_buf(false, true)
+			vim.bo[scratch].bufhidden = "wipe"
+			vim.api.nvim_win_set_buf(sess.winnr, scratch)
+		end
+		pcall(vim.api.nvim_buf_delete, old_buf, { force = true })
+	end
+	local win = is_win_valid(sess) and sess.winnr or create_split()
+	launch_session_in_window(sess, win, adapter)
 	vim.cmd("startinsert")
 end
 
---- Open multiple sessions in a Y×4 grid layout.
---- Creates a grid of terminal windows: 4 columns, as many rows as needed.
---- Each session gets its own window with a terminal buffer.
---- @param session_ids string[]  List of session IDs to open in the grid
---- @param cols number|nil       Number of columns (default 4)
+--- Open multiple sessions in a Y×N grid in a fresh tab.
+--- @param session_ids string[]
+--- @param cols number|nil  default 4
 function M.open_grid(session_ids, cols)
 	cols = cols or 4
 	local sessions = {}
@@ -198,12 +219,9 @@ function M.open_grid(session_ids, cols)
 
 	local rows = math.ceil(#sessions / cols)
 
-	-- Create a fresh empty tab so the grid doesn't interfere with existing layout
 	vim.cmd("tabnew")
 	local first_win = vim.api.nvim_get_current_win()
 
-	-- Phase 1: Create all rows by splitting the initial full-width window
-	-- horizontally. Each split divides the remaining vertical space.
 	local row_wins = { first_win }
 	for r = 2, rows do
 		vim.api.nvim_set_current_win(row_wins[r - 1])
@@ -211,8 +229,6 @@ function M.open_grid(session_ids, cols)
 		row_wins[r] = vim.api.nvim_get_current_win()
 	end
 
-	-- Phase 2: Split each row into columns.
-	-- Now each row_wins[r] is a full-width window; vsplitting it produces even columns.
 	local grid_wins = {}
 	for r = 1, rows do
 		grid_wins[r] = { row_wins[r] }
@@ -223,16 +239,13 @@ function M.open_grid(session_ids, cols)
 		end
 	end
 
-	-- Equalize all windows
 	vim.cmd("wincmd =")
 
-	-- Now place a terminal in each grid cell
 	local idx = 0
 	for r = 1, rows do
 		for c = 1, cols do
 			idx = idx + 1
 			if idx > #sessions then
-				-- No more sessions — close the extra window
 				if grid_wins[r] and grid_wins[r][c] and vim.api.nvim_win_is_valid(grid_wins[r][c]) then
 					vim.api.nvim_win_close(grid_wins[r][c], true)
 				end
@@ -242,12 +255,12 @@ function M.open_grid(session_ids, cols)
 		end
 	end
 
-	-- Focus the first agent's window
 	if sessions[1] and sessions[1].winnr and vim.api.nvim_win_is_valid(sessions[1].winnr) then
 		vim.api.nvim_set_current_win(sessions[1].winnr)
 	end
 end
 
+--- Hide a session's window. The process keeps running.
 function M.close(session_id)
 	local sess = get_session(session_id)
 	if not sess then
@@ -297,10 +310,7 @@ function M.send(session_id, text)
 		return
 	end
 	if not sess.jobid then
-		vim.notify(
-			string.format("nvim-agent: no agent running for session %d", sess.instance_num or 0),
-			vim.log.levels.WARN
-		)
+		vim.notify(string.format("nvim-agent: agent '%s' is not running", sess.name), vim.log.levels.WARN)
 		return
 	end
 	text = (text or ""):gsub("[\r\n]+$", "")
@@ -330,11 +340,10 @@ function M.get_bufnr(session_id)
 	return sess.bufnr
 end
 
---- Find a session by agent name and submit text to its terminal as if the
---- user typed it and pressed Enter. Used by the MCP trigger_agent tool via
---- Neovim RPC. See M.send for why the Enter is deferred.
---- @param agent_name string  Session name (e.g. "researcher", "pm")
---- @param text string        Text to type. Trailing CR/LF is stripped; Enter is appended automatically.
+--- Find a session by name and submit text to its terminal. Used by the MCP
+--- trigger_agent tool via Neovim RPC. See M.send for why Enter is deferred.
+--- @param agent_name string  Session name
+--- @param text string
 --- @return boolean
 function M.send_by_name(agent_name, text)
 	local sess = require("nvim-agent.session").get_by_name(agent_name)
@@ -353,6 +362,7 @@ function M.send_by_name(agent_name, text)
 	return true
 end
 
+--- Stop the job and delete the buffer. Does not touch the registry.
 function M.cleanup(session_id)
 	local sess = get_session(session_id)
 	if not sess then

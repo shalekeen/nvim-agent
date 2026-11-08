@@ -24,18 +24,18 @@ function M.base:get_system_prompt()
 	return require("nvim-agent.context").compose_system_prompt(nil)
 end
 
---- Return the permission profile for a given agent.
+--- Return the permission profile for a session's agent.
 ---
 --- The base grants NOTHING. Permission strings are inherently CLI-specific
 --- (Claude Code spells them "Bash(*)" / "mcp__nvim-agent__*"; other CLIs
 --- have their own grammar or no per-tool model at all), so a neutral
 --- default is the empty profile. Adapters whose CLI has a permission model
---- override this — see claude_code.lua for a profile-based implementation
---- that reads <def_dir>/agents/<name>/permissions.json.
---- @param agent_name string
---- @param cwd string|nil
+--- override this and read <session.active_dir>/permissions.json — the
+--- agent's optional permissions file, mirrored into the session at launch.
+--- See claude_code.lua for a profile-based implementation.
+--- @param session table
 --- @return table  { allow: string[], deny: string[] }
-function M.base:get_agent_permissions(agent_name, cwd)
+function M.base:get_agent_permissions(session)
 	return { allow = {}, deny = {} }
 end
 

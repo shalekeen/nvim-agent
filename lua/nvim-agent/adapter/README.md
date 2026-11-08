@@ -23,10 +23,10 @@ points. Implement the ones whose lifecycle hook you need.
 |---|---|:-:|---|
 | `get_cmd(session)` | When a session's terminal is opened (`terminal.open`) | ✅ | Return the argv array to pass to `termopen`. Must succeed even when called with a nil session (defensive default). |
 | `get_context_contract()` | Every time the system prompt is composed (`context.compose_system_prompt`, i.e. inside `get_cmd`) | ❌ | Return the "how context reaches you" section (layer 1b): whether context is injected per prompt or read on demand, and which native tools to avoid, in your CLI's vocabulary. Base default tells the agent to read the files on demand. |
-| `get_agent_permissions(name, cwd)` | By your own `get_cmd` (the harness never calls it) | ❌ | Per-agent tool permissions. Base returns `{ allow = {}, deny = {} }` because permission grammar is CLI-specific; override if your CLI has a per-tool model. |
+| `get_agent_permissions(session)` | By your own `get_cmd` (the harness never calls it) | ❌ | Per-agent tool permissions, read from `<session.active_dir>/permissions.json` (the agent's optional permissions file, mirrored in at launch). Base returns `{ allow = {}, deny = {} }` because permission grammar is CLI-specific; override if your CLI has a per-tool model. |
 | `setup()` | Once at plugin startup (from `nvim-agent.setup`) | ❌ | Global one-time install: write hook scripts, register MCP server in CLI's config, install permissions, write CLI-side instruction file. Must be **idempotent** — runs on every Neovim startup. |
 | `setup_session_mcp(session)` | Before each session's `termopen` (from `terminal.open`) | ❌ | Write per-session config the CLI reads at launch (typically MCP server pointer + injection hook). Fresh every session, no idempotency required. |
-| `setup_project_permissions(cwd)` | When a workspace is launched (`commands.lua`, `init.lua`) | ❌ | Write per-project CLI config so agents in that project don't get hammered with permission prompts. Idempotent. |
+| `setup_project_permissions(cwd)` | When a workspace is launched (`launcher.lua`) | ❌ | Write per-project CLI config so agents in that project don't get hammered with permission prompts. Idempotent. |
 | `setup_buffer_keymaps(bufnr)` | Once per session terminal buffer (from `terminal.open`) | ❌ | Add buffer-local keymaps for the terminal (e.g. `<Esc><Esc>` to leave terminal mode). |
 | `on_enter(bufnr)` | Every `BufEnter` of a session terminal (from `autocmds.lua`) | ❌ | Sync state / refresh ephemeral context when the user looks at the buffer. The harness already refreshes `ephemeral.json` here, so most adapters can skip this. |
 
@@ -54,16 +54,16 @@ same session table. Fields you can rely on:
 
 | Field | Type | Description |
 |---|---|---|
-| `session.id` | `string` | Compound ID `"<pid>_<name>"`. Unique across all running Neovims. |
-| `session.name` | `string` | User-facing name. `"main"` for the first session, user-supplied for subsequent ones. |
-| `session.instance_num` | `number` | Sequential 1-indexed creation order. Used for buffer naming. |
+| `session.id` | `string` | Compound ID `"<instance-id>_<name>"`. Unique across all running Neovims. |
+| `session.name` | `string` | Session name: the workspace manifest entry's name, what peers address. |
+| `session.agent` | `string` | The global agent (`~/.nvim-agent/agents/<agent>/`) this session mirrors. Usually equals `name`; differs when one workspace runs the same agent twice. |
+| `session.state` | `string` | `"created"`, `"running"` or `"exited"`. An exited session is still a workspace member and can be relaunched into the same `active_dir`. |
+| `session.instance_num` | `number` | Sequential 1-indexed creation order. Display ordering only. |
 | `session.instance_id` | `string` | UUID of the owning Neovim instance, minted once when nvim-agent loads. Also at `require("nvim-agent.session").instance_id`. |
 | `session.window_id` | `number` | Owning Neovim's PID (diagnostics only; no path derives from it). |
 | `session.process_dir` | `string` | `~/.nvim-agent/sessions/<instance-id>/`. Shared by all sessions in this Neovim. Holds `ephemeral.json`. |
 | `session.dir` | `string` | `<process_dir>/<name>/`. Per-session root. Good place for `mcp-settings.json` and any other per-session config. |
-| `session.active_dir` | `string` | `<dir>/active/`. Holds the session's context files (`system_prompt.md`, `user_notes.md`, `role.md`, `.flavor_meta.json`, etc.). **This is the path you point your CLI at.** |
-| `session.flavor` | `string` | The flavor name this session was launched with. |
-| `session.checkpoint` | `string\|nil` | Optional checkpoint name within the flavor. |
+| `session.active_dir` | `string` | `<dir>/active/`. A mirror of the agent's definition files (`role.md`, `system_prompt.md`, `user_notes.md`, `persistent_dirs.json`, optional `permissions.json`). **This is the path you point your CLI at.** Edits saved here are written back to the agent. |
 | `session.bufnr` | `number\|nil` | Terminal buffer number (nil before terminal open). |
 | `session.jobid` | `number\|nil` | termopen job ID (nil before launch). |
 
@@ -82,10 +82,11 @@ The system prompt is built in layers via
    CLI's statement of how those files reach the agent (hook vs. on-demand)
    and which native tools to avoid. Omitted if no adapter is active or it
    returns `""`.
-2. **`<active_dir>/system_prompt.md`** — the user-editable flavor base.
+2. **`<active_dir>/role.md`** — the agent's mandatory role, rendered under
+   a "# Your role" heading. It steers the agent from turn one and is what
+   peers see when deciding whom to delegate to.
+3. **`<active_dir>/system_prompt.md`** — the agent's behaviour prompt.
    Falls back to `config.default_system_prompt` if empty/missing.
-3. **`<active_dir>/agent_prompt.md`** — optional per-agent addendum. Skipped
-   if empty/missing.
 
 Layers are joined with blank lines. **Always go through
 `compose_system_prompt(active_dir)`** rather than reading `system_prompt.md`
@@ -129,12 +130,14 @@ agent via MCP tools) does.
 
 | File | Volatility | Description |
 |---|---|---|
-| `system_prompt.md` | Stable | Flavor base, edited by user occasionally. |
-| `agent_prompt.md` | Stable | Optional per-agent addendum. |
-| `user_notes.md` | Stable | Standing user-facing notes. |
-| `persistent_dirs.json` | Stable | Pinned code paths the user wants the agent to know about. |
-| `role.md` | Stable | Agent role (used for peer discovery in workspaces). |
-| `.flavor_meta.json` | Stable | Which flavor/checkpoint this session loaded from. |
+| `role.md` | Stable | The agent's role. Mandatory. Opens the system prompt and is what peers see for delegation. |
+| `system_prompt.md` | Stable | The agent's behaviour prompt. |
+| `user_notes.md` | Stable | Standing user notes. |
+| `persistent_dirs.json` | Stable | Pinned code paths the agent should know about. |
+| `permissions.json` | Stable | Optional, adapter-specific tool permissions. |
+
+All of these are mirrored from `~/.nvim-agent/agents/<agent>/` at launch and
+written back there when edited in the session.
 
 ### Files in `session.process_dir` (shared across all sessions in this Neovim)
 
@@ -233,8 +236,9 @@ CLIs have a settings.json-style file you can write to that allows or
 denies specific tools.
 
 **Per-agent permissions** are an nvim-agent convention: an agent's
-definition dir may contain `permissions.json`. The format the bundled
-adapter uses:
+library dir (`~/.nvim-agent/agents/<name>/`) may contain
+`permissions.json`, which is mirrored into `session.active_dir` at launch.
+The format the bundled adapter uses:
 
 ```json
 { "profile": "qa" }
@@ -247,8 +251,8 @@ or
 ```
 
 `claude_code.lua` defines named profiles (`full`, `qa`, `oversight`,
-`orchestrator`) and a `get_agent_permissions(name, cwd)` helper that
-resolves them. If you want the same UX in your adapter, copy the pattern.
+`orchestrator`) and a `get_agent_permissions(session)` helper that reads
+`<session.active_dir>/permissions.json` and resolves them. If you want the same UX in your adapter, copy the pattern.
 If your CLI's permission model is simpler, do something simpler.
 
 **Per-project permissions** flow through `setup_project_permissions(cwd)`.
@@ -307,7 +311,7 @@ Copy `TEMPLATE.lua` to `<your_cli>.lua` and work through this:
   - [ ] Global CLI settings.json updated to include nvim-agent without clobbering other entries
 - [ ] `setup_project_permissions(cwd)` writes project-scoped settings (if applicable)
 - [ ] Registered in `builtin_adapters` in `adapter/init.lua`
-- [ ] Smoke-tested: `:NvimAgent session new` launches the CLI, MCP tools work, peer messaging works
+- [ ] Smoke-tested: `:NvimAgent` launches a workspace, MCP tools work, peer messaging works
 
 ---
 
@@ -320,8 +324,8 @@ CLI has its own setup-validation needs). Smoke-test by hand:
 " Configure the plugin to use your adapter
 :lua require("nvim-agent").setup({ adapter = "your_cli" })
 
-" Launch a session and confirm the CLI starts cleanly
-:NvimAgent session new
+" Launch a workspace and confirm the CLI starts cleanly
+:NvimAgent
 
 " In a separate shell, verify the per-session settings were written:
 :!cat ~/.nvim-agent/sessions/<instance-id>/main/mcp-settings.json
@@ -349,16 +353,15 @@ nvim-agent/
 │   ├── claude_code.lua      # Reference implementation
 │   ├── TEMPLATE.lua         # Fork-and-fill starting point for new adapters
 │   └── README.md            # This file
-├── agent.lua                # Agent definitions and templates
-├── workspace.lua            # Workspace runtime/def dirs and manifest CRUD
-├── session.lua              # Per-Neovim session registry
+├── agent.lua                # Global agent library (~/.nvim-agent/agents/)
+├── workspace.lua            # Workspace manifests + per-instance runtime dirs
+├── session.lua              # Per-Neovim session registry (liveness)
+├── launcher.lua             # Startup picker, agent selection, runtime add/remove, spawn; calls setup_project_permissions
 ├── terminal.lua             # Calls get_cmd, setup_session_mcp, setup_buffer_keymaps
-├── autocmds.lua             # Calls on_enter on BufEnter
-├── commands.lua             # Calls setup_project_permissions on workspace launch
-├── context/init.lua         # compose_system_prompt — three-layer composition
-├── flavor/                  # Flavor library and last-used-flavor persistence
+├── autocmds.lua             # Calls on_enter on BufEnter; syncs session edits back to agents
+├── context/init.lua         # compose_system_prompt — layered composition
 └── mcp/
-    │   ├── server.lua           # MCP server (JSON-RPC 2.0 framing on responses; permissive on incoming version field)
+    ├── server.lua           # MCP server (JSON-RPC 2.0 framing on responses; permissive on incoming version field)
     ├── tools.lua            # MCP tool implementations
     ├── nvim_rpc.lua         # Shell-based Neovim RPC wrapper
     └── filelock.lua         # mkdir-based cross-process locking

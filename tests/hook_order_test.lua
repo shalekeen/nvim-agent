@@ -92,7 +92,6 @@ end
 -- One file per emitted section, populated with content the hook will detect.
 write(active_dir .. "/role.md", "lead implementer\n")
 write(cwd .. "/PROJECT.md", "# Project\n")
-write(active_dir .. "/.flavor_meta.json", '{"flavor":"dev"}')
 write(active_dir .. "/persistent_dirs.json", "[]")
 write(active_dir .. "/user_notes.md", "# Notes\n")
 write(runtime_dir .. "/history/Alice.md", "log entry\n")
@@ -181,7 +180,6 @@ end
 local expected = {
 	"role.md",
 	"PROJECT.md",
-	".flavor_meta.json",
 	"persistent_dirs.json",
 	"user_notes.md",
 	"agent_history.md",

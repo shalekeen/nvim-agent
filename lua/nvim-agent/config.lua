@@ -2,9 +2,9 @@ local M = {}
 
 M.defaults = {
 	adapter = nil,
-	-- On startup: when true, auto-launch the previously used flavor (or show
-	-- the picker on first run). When false, do nothing on startup; the user
-	-- triggers :NvimAgent manually, which always shows the full picker.
+	-- On startup: when true, open the startup picker (resume ephemeral / new /
+	-- load), or on first launch in a directory the agent picker for the
+	-- ephemeral workspace. When false, nothing happens until :NvimAgent.
 	auto_open = false,
 	base_dir = vim.fn.expand("~/.nvim-agent"),
 	context_files = {
@@ -22,8 +22,8 @@ M.defaults = {
 	-- Layer 1 of the composed system prompt: the CLI-neutral runtime
 	-- contract from nvim-agent itself (directory layout, context-file
 	-- catalogue, MCP tool catalogue, multi-agent coordination). Always
-	-- emitted first so it can't be deleted by editing flavor or per-agent
-	-- prompt files; lives here rather than in any CLI-global instruction
+	-- emitted first so it can't be deleted by editing an agent's files;
+	-- lives here rather than in any CLI-global instruction
 	-- file so it ONLY reaches agents launched by nvim-agent.
 	--
 	-- Deliberately NOT here: anything that depends on the CLI — how context
@@ -43,10 +43,9 @@ Context is split across three directories:
 
 nvim-agent maintains these context files for you. How they reach you depends on the
 CLI you are running in and is described in the "How context reaches you" section below:
-- .flavor_meta.json           -- (session dir) Your active flavor and checkpoint
+- role.md                     -- (session dir) Your role: what you do, and what peers should delegate to you
 - user_notes.md               -- (session dir) User preferences and constraints
 - persistent_dirs.json        -- (session dir) Important code paths to reference
-- role.md                     -- (session dir) Your role and area of expertise (if set)
 - PROJECT.md                  -- (project root) Project vision, architecture, and conventions (if present)
 - ephemeral.json              -- (process dir) Current editor state, SHARED by all agents
 - tmux_captures.json          -- (process dir) Captured tmux pane content, SHARED by all agents
@@ -191,12 +190,15 @@ Read your complete personal work history for this project.
 Read the full shared history of all work done by any agent in this Neovim instance.
 Use this when starting a new session to understand what has already been accomplished.
 
-### spawn_agent(name, system_prompt, role, user_notes)
-Dynamically spawn a new workspace agent at runtime. Creates the agent's definition
-directory, writes context files, creates a session, and opens a terminal buffer.
-The new agent appears as a peer immediately and can be communicated with via
-send_message/trigger_agent. Use this when work can be better parallelized by adding
-more agents on the fly.
+### spawn_agent(name, system_prompt?, role?, user_notes?)
+Add an agent to the live workspace at runtime, or relaunch one that has exited:
+- name is an exited peer              -> that peer is relaunched (other arguments ignored)
+- name is an agent in the library     -> it is added to the workspace and launched
+- otherwise                            -> system_prompt and role are REQUIRED; the agent is
+                                          saved to the library's "spawned" section, added to
+                                          the workspace, and launched
+The agent appears as a peer immediately and can be reached via send_message/trigger_agent.
+Use this to parallelise work, or to bring back a peer whose terminal has exited.
 
 ---
 

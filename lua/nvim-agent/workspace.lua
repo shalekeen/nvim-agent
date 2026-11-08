@@ -1,34 +1,28 @@
--- Project-local agent and workspace management.
+-- Workspaces: which agents run together in a project.
 --
--- Two-layer directory structure:
+--   <cwd>/.nvim-agent/                       gitignored, project-local
+--     workspaces/<name>/workspace.json       manifest: { name, agents = [{ name, agent }] }
+--     workspaces/ephemeral/workspace.json    the auto-created scratch workspace
+--     instances/<instance_id>/               THIS Neovim's peer state
+--       status/  messages/  history/  triggers/
 --
---   <cwd>/.nvim-agent/             RUNTIME — gitignored, ephemeral state
---     config.json                  { workspace_def_dir = "<rel-path>" }  (project-level)
---     instances/<instance_id>/     one subtree per running Neovim instance:
---       messages/                  agent-to-agent messages
---       status/                    peer discovery (*.json)
---       history/                   per-agent work logs (*.md)
---       triggers/                  wakeup signals
+-- A manifest entry pairs a SESSION name (unique within the workspace, what
+-- peers address) with the global AGENT it is built from (agent.lua). The
+-- same agent may appear twice under different session names.
 --
--- Peer state is namespaced by session.instance_id so two Neovim instances
--- open on the same project never see each other's agents.
+-- Membership vs liveness: the manifest is membership. Whether a member's
+-- CLI process is currently running is session state (session.lua), not
+-- manifest state — a crashed or exited agent stays a member and can be
+-- relaunched. Only add_entry / remove_entry change membership, and both
+-- write the manifest immediately; there is no separate "save" step.
 --
---   <cwd>/<def_dir>/               DEFINITIONS — checked into git, user-named
---     agents/<name>/               one directory per agent, containing:
---       system_prompt.md           agent system prompt
---       user_notes.md              persistent user notes
---       persistent_dirs.json       pinned code paths
---       .flavor_meta.json          flavor/checkpoint metadata
---       role.md                    agent role for peer discovery
---     workspaces/<name>.json       workspace: { name, agents: [{name, role}] }
---
--- Mode 1 (standalone): no .nvim-agent/ involved; uses ~/.nvim-agent/ globally.
--- Mode 2 (workspace):  both dirs used; agent defs are checked in, runtime is gitignored.
---
--- Roles are workspace-scoped: the same agent can have different roles in
--- different workspaces (or across projects).
+-- One workspace is live per Neovim instance (M.current). Manifests
+-- themselves are project-level and may be loaded by several instances.
 
 local M = {}
+
+M.EPHEMERAL = "ephemeral"
+M.MANIFEST_FILE = "workspace.json"
 
 ------------------------------------------------------------------------
 -- Helpers
@@ -48,10 +42,10 @@ local function read_json(path)
 	return (ok and type(data) == "table") and data or nil
 end
 
---- Atomically write JSON to `path`: writes to <path>.tmp, then renames. A crash
---- mid-write therefore leaves the previous (valid) file intact rather than a
---- truncated/half-written one that read_json would silently treat as missing.
+--- Atomically write JSON: write <path>.tmp then rename, so a crash mid-write
+--- leaves the previous valid file rather than a truncated one.
 local function write_json(path, data)
+	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
 	local tmp = path .. ".tmp"
 	local f = io.open(tmp, "w")
 	if not f then
@@ -63,272 +57,369 @@ local function write_json(path, data)
 	local ok, err = os.rename(tmp, path)
 	if not ok then
 		os.remove(tmp)
-		vim.notify(
-			"nvim-agent: failed to rename " .. tmp .. " → " .. path .. ": " .. tostring(err),
-			vim.log.levels.ERROR
-		)
+		vim.notify("nvim-agent: failed to rename " .. tmp .. " → " .. path .. ": " .. tostring(err), vim.log.levels.ERROR)
 		return false
 	end
 	return true
 end
 
 ------------------------------------------------------------------------
--- Runtime dir  (<cwd>/.nvim-agent/ — gitignored)
+-- Runtime dirs
 ------------------------------------------------------------------------
 
---- Return the project-level runtime .nvim-agent/ directory path (NOT checked
---- into git). Only config.json lives directly here; all peer state is under
---- instance_runtime_dir().
+--- Project-level runtime root (gitignored). Holds workspaces/ and instances/.
 --- @param cwd string|nil
 --- @return string
 function M.runtime_dir(cwd)
 	return (cwd or vim.fn.getcwd()) .. "/.nvim-agent"
 end
 
---- Return this Neovim instance's runtime directory:
----   <cwd>/.nvim-agent/instances/<instance_id>/
---- Everything agents share with their peers (status, messages, history,
---- triggers) lives here. The same path is handed to the agent CLI and MCP
---- server as $NVIM_AGENT_RUNTIME_DIR so the hook script and tools read and
---- write exactly this tree and no other instance's.
+--- This Neovim instance's peer-state root. Handed to the agent CLI and MCP
+--- server as $NVIM_AGENT_RUNTIME_DIR so two Neovims on the same project never
+--- see each other's agents.
 --- @param cwd string|nil
 --- @return string
 function M.instance_runtime_dir(cwd)
 	return M.runtime_dir(cwd) .. "/instances/" .. require("nvim-agent.session").instance_id
 end
 
---- Create the per-instance runtime directory structure
---- (messages, status, history, triggers).
+--- Create this instance's peer-state subdirectories.
 --- @param cwd string|nil
---- @return string  Instance runtime dir path
+--- @return string  instance runtime dir
 function M.init_runtime(cwd)
 	local dir = M.instance_runtime_dir(cwd)
-	vim.fn.mkdir(dir .. "/messages", "p")
-	vim.fn.mkdir(dir .. "/status", "p")
-	vim.fn.mkdir(dir .. "/history", "p")
-	vim.fn.mkdir(dir .. "/triggers", "p")
+	for _, sub in ipairs({ "messages", "status", "history", "triggers" }) do
+		vim.fn.mkdir(dir .. "/" .. sub, "p")
+	end
 	return dir
 end
 
 ------------------------------------------------------------------------
--- Config  (<cwd>/.nvim-agent/config.json)
+-- Manifests
 ------------------------------------------------------------------------
 
 --- @param cwd string|nil
 --- @return string
-function M.config_path(cwd)
-	return M.runtime_dir(cwd) .. "/config.json"
+function M.workspaces_dir(cwd)
+	return M.runtime_dir(cwd) .. "/workspaces"
 end
 
---- Read workspace config. Returns nil if not initialized.
+--- @param name string
 --- @param cwd string|nil
---- @return table|nil  { workspace_def_dir = "..." }
-function M.read_config(cwd)
-	return read_json(M.config_path(cwd))
+--- @return string
+function M.manifest_path(name, cwd)
+	return M.workspaces_dir(cwd) .. "/" .. name .. "/" .. M.MANIFEST_FILE
 end
 
---- Write workspace config.
---- @param cwd string|nil
---- @param cfg table
-function M.write_config(cwd, cfg)
-	vim.fn.mkdir(M.runtime_dir(cwd), "p")
-	write_json(M.config_path(cwd), cfg)
-end
-
-------------------------------------------------------------------------
--- Definition dir  (<cwd>/<workspace_def_dir>/ — checked into git)
-------------------------------------------------------------------------
-
---- Return the absolute path to the definition directory, or nil if not configured.
---- @param cwd string|nil
---- @return string|nil
-function M.def_dir(cwd)
-	local cfg = M.read_config(cwd)
-	if not cfg or not cfg.workspace_def_dir then
-		return nil
-	end
-	return (cwd or vim.fn.getcwd()) .. "/" .. cfg.workspace_def_dir
-end
-
---- Return true if a workspace has been initialized (config + def dir both exist).
+--- True when the project has ever had a workspace (used by the startup flow
+--- to decide between "first launch here" and "show the picker").
 --- @param cwd string|nil
 --- @return boolean
-function M.has_workspace(cwd)
-	local dd = M.def_dir(cwd)
-	return dd ~= nil and vim.fn.isdirectory(dd) == 1
+function M.any_exist(cwd)
+	return #M.list(cwd) > 0
 end
 
---- Initialize a new workspace: create the definition directory + runtime dir,
---- write config.json pointing at the definition directory.
---- @param cwd string|nil
---- @param def_dir_name string  Relative name of the definitions directory (checked into git)
---- @return string  Absolute path to the definition directory
-function M.init(cwd, def_dir_name)
-	cwd = cwd or vim.fn.getcwd()
-	local dd = cwd .. "/" .. def_dir_name
-	vim.fn.mkdir(dd .. "/agents", "p")
-	vim.fn.mkdir(dd .. "/workspaces", "p")
-	M.init_runtime(cwd)
-	M.write_config(cwd, { workspace_def_dir = def_dir_name })
-	return dd
-end
-
-------------------------------------------------------------------------
--- Workspace ↔ agent crosswalk: removing an agent must scrub it from
--- every manifest that referenced it. Agent definition CRUD itself lives
--- in lua/nvim-agent/agent.lua; this function is the workspace-side
--- complement, called by agent.delete().
-------------------------------------------------------------------------
-
---- Strip `agent_name` from every workspace manifest that lists it, then
---- re-save the touched manifests.
---- @param agent_name string
---- @param cwd string|nil
-function M.remove_agent_from_workspaces(agent_name, cwd)
-	local workspaces = M.workspace_list(cwd)
-	for _, ws in ipairs(workspaces) do
-		local filtered = {}
-		local found = false
-		for _, a in ipairs(ws.agents or {}) do
-			if a.name == agent_name then
-				found = true
-			else
-				table.insert(filtered, a)
-			end
-		end
-		if found then
-			ws.agents = filtered
-			M.workspace_save(ws, cwd)
-		end
+--- Validate a workspace name.
+--- @param name any
+--- @param allow_ephemeral boolean|nil
+--- @return boolean, string|nil
+function M.validate_name(name, allow_ephemeral)
+	if type(name) ~= "string" or name == "" then
+		return false, "workspace name is required"
 	end
+	if name:find("/", 1, true) or name:find("\\", 1, true) or name:match("^%.") then
+		return false, "workspace name may not contain path separators or start with '.'"
+	end
+	if name == M.EPHEMERAL and not allow_ephemeral then
+		return false, "'" .. M.EPHEMERAL .. "' is reserved for the ephemeral workspace"
+	end
+	return true
 end
 
-------------------------------------------------------------------------
--- Workspace definitions  (<def_dir>/workspaces/<name>.json)
--- Schema: { name, agents: [{ name, role }] }
-------------------------------------------------------------------------
-
---- @param cwd string|nil
---- @return table[]
-function M.workspace_list(cwd)
-	local dd = M.def_dir(cwd)
-	if not dd then
-		return {}
-	end
-	local paths = vim.fn.glob(dd .. "/workspaces/*.json", false, true)
-	local workspaces = {}
-	for _, path in ipairs(paths) do
-		local def = read_json(path)
-		if def then
-			table.insert(workspaces, def)
-		end
-	end
-	table.sort(workspaces, function(a, b)
-		return (a.name or "") < (b.name or "")
-	end)
-	return workspaces
+--- @param name string
+--- @return table  { name = name, agents = {} }
+function M.new_manifest(name)
+	return { name = name, agents = {} }
 end
 
+--- Read a manifest, or nil if it does not exist / is unreadable.
+--- Normalises legacy entries that lack an `agent` field.
 --- @param name string
 --- @param cwd string|nil
 --- @return table|nil
-function M.workspace_get(name, cwd)
-	local dd = M.def_dir(cwd)
-	if not dd then
+function M.read(name, cwd)
+	local m = read_json(M.manifest_path(name, cwd))
+	if not m then
 		return nil
 	end
-	return read_json(dd .. "/workspaces/" .. name .. ".json")
-end
-
---- Create or update a workspace definition.
---- @param def table  { name, agents: [{ name, role }] }
---- @param cwd string|nil
-function M.workspace_save(def, cwd)
-	local dd = M.def_dir(cwd)
-	if not dd then
-		vim.notify("nvim-agent: no workspace initialized — run workspace init first", vim.log.levels.WARN)
-		return
+	m.name = name
+	m.agents = m.agents or {}
+	for _, e in ipairs(m.agents) do
+		e.agent = e.agent or e.name
 	end
-	local dir = dd .. "/workspaces"
-	vim.fn.mkdir(dir, "p")
-	if write_json(dir .. "/" .. def.name .. ".json", def) then
-		vim.notify("nvim-agent: workspace '" .. def.name .. "' saved", vim.log.levels.INFO)
-	end
+	return m
 end
 
 --- @param name string
 --- @param cwd string|nil
 --- @return boolean
-function M.workspace_delete(name, cwd)
-	local dd = M.def_dir(cwd)
-	if not dd then
-		return false
+function M.exists(name, cwd)
+	return vim.fn.filereadable(M.manifest_path(name, cwd)) == 1
+end
+
+--- Persist a manifest.
+--- @param manifest table
+--- @param cwd string|nil
+--- @return boolean
+function M.save(manifest, cwd)
+	return write_json(M.manifest_path(manifest.name, cwd), {
+		name = manifest.name,
+		agents = manifest.agents or {},
+	})
+end
+
+--- List all manifests in the project. The ephemeral workspace, when present,
+--- is always first; the rest are sorted by name.
+--- @param cwd string|nil
+--- @return table[]  manifests, each with `ephemeral = boolean`
+function M.list(cwd)
+	local base = M.workspaces_dir(cwd)
+	if vim.fn.isdirectory(base) ~= 1 then
+		return {}
 	end
-	local path = dd .. "/workspaces/" .. name .. ".json"
-	if vim.fn.filereadable(path) == 1 then
-		vim.fn.delete(path)
-		vim.notify("nvim-agent: workspace '" .. name .. "' deleted", vim.log.levels.INFO)
-		return true
+	local out = {}
+	for _, entry in ipairs(vim.fn.readdir(base)) do
+		if not entry:match("^%.") then
+			local m = M.read(entry, cwd)
+			if m then
+				m.ephemeral = (entry == M.EPHEMERAL)
+				table.insert(out, m)
+			end
+		end
 	end
-	vim.notify("nvim-agent: workspace '" .. name .. "' not found", vim.log.levels.WARN)
-	return false
+	table.sort(out, function(a, b)
+		if a.ephemeral ~= b.ephemeral then
+			return a.ephemeral
+		end
+		return a.name < b.name
+	end)
+	return out
+end
+
+--- @param name string
+--- @param cwd string|nil
+--- @return boolean ok, string|nil err
+function M.delete(name, cwd)
+	local dir = M.workspaces_dir(cwd) .. "/" .. name
+	if vim.fn.isdirectory(dir) ~= 1 then
+		return false, "workspace '" .. name .. "' not found"
+	end
+	vim.fn.delete(dir, "rf")
+	if M.current and M.current.name == name then
+		M.current = nil
+	end
+	return true
+end
+
+--- Rename a workspace. Also used to promote the ephemeral workspace to a
+--- named one. Updates M.current when it is the one being renamed.
+--- @param old string
+--- @param new string
+--- @param cwd string|nil
+--- @return boolean ok, string|nil err
+function M.rename(old, new, cwd)
+	local ok, err = M.validate_name(new)
+	if not ok then
+		return false, err
+	end
+	if not M.exists(old, cwd) then
+		return false, "workspace '" .. old .. "' not found"
+	end
+	if M.exists(new, cwd) then
+		return false, "workspace '" .. new .. "' already exists"
+	end
+	local base = M.workspaces_dir(cwd)
+	if vim.fn.rename(base .. "/" .. old, base .. "/" .. new) ~= 0 then
+		return false, "rename failed"
+	end
+	local m = M.read(new, cwd)
+	if m then
+		M.save(m, cwd)
+	end
+	if M.current and M.current.name == old then
+		M.current.name = new
+	end
+	return true
 end
 
 ------------------------------------------------------------------------
--- Snapshot: save all live sessions → agent defs + workspace definition
+-- Membership
 ------------------------------------------------------------------------
 
---- Snapshot all open sessions into the definition directory as a named workspace.
---- Each session's active_dir is copied into <def_dir>/agents/<name>/.
---- @param workspace_name string
+--- Find a manifest entry by session name.
+--- @param manifest table
+--- @param session_name string
+--- @return table|nil entry, integer|nil index
+function M.find_entry(manifest, session_name)
+	for i, e in ipairs(manifest.agents or {}) do
+		if e.name == session_name then
+			return e, i
+		end
+	end
+	return nil
+end
+
+--- Add a member and persist. `entry.name` is the session name (defaults to
+--- the agent name) and must be unique within the workspace; `entry.agent` is
+--- the global agent it is built from and must exist.
+--- @param manifest table
+--- @param entry table  { agent = string, name = string|nil }
 --- @param cwd string|nil
---- @return boolean
-function M.save_current_as(workspace_name, cwd)
+--- @return boolean ok, string|nil err
+function M.add_entry(manifest, entry, cwd)
+	local agent_mod = require("nvim-agent.agent")
+	if not entry or not entry.agent then
+		return false, "entry.agent is required"
+	end
+	if not agent_mod.exists(entry.agent) then
+		return false, "agent '" .. entry.agent .. "' not found in the global library"
+	end
+	entry.name = (entry.name and entry.name ~= "") and entry.name or entry.agent
+	if entry.name:find("/", 1, true) then
+		return false, "session name may not contain '/'"
+	end
+	if M.find_entry(manifest, entry.name) then
+		return false, "'" .. entry.name .. "' is already in workspace '" .. manifest.name .. "'"
+	end
+	manifest.agents = manifest.agents or {}
+	table.insert(manifest.agents, { name = entry.name, agent = entry.agent })
+	M.save(manifest, cwd)
+	return true
+end
+
+--- Remove a member and persist.
+--- @param manifest table
+--- @param session_name string
+--- @param cwd string|nil
+--- @return boolean ok, string|nil err
+function M.remove_entry(manifest, session_name, cwd)
+	local _, idx = M.find_entry(manifest, session_name)
+	if not idx then
+		return false, "'" .. session_name .. "' is not in workspace '" .. manifest.name .. "'"
+	end
+	table.remove(manifest.agents, idx)
+	M.save(manifest, cwd)
+	return true
+end
+
+------------------------------------------------------------------------
+-- Live workspace for this Neovim instance
+------------------------------------------------------------------------
+
+--- The manifest currently loaded in this instance, or nil.
+M.current = nil
+
+--- @param manifest table|nil
+function M.set_current(manifest)
+	M.current = manifest
+end
+
+--- @return table|nil
+function M.get_current()
+	return M.current
+end
+
+------------------------------------------------------------------------
+-- Legacy import  (<def_dir>/agents + <def_dir>/workspaces → new layout)
+------------------------------------------------------------------------
+
+--- One-time import of a pre-2.0 project: reads .nvim-agent/config.json for
+--- the checked-in definition dir, copies each agent there into the GLOBAL
+--- library (skipping names that already exist, planting a placeholder role
+--- where none was defined), and rewrites each manifest into the new
+--- workspaces/<name>/workspace.json shape. The legacy config.json is renamed
+--- to config.json.legacy so this runs once; the def dir itself is untouched.
+--- @param cwd string|nil
+--- @return table|nil  { agents = string[], workspaces = string[], needs_role = string[] } or nil when nothing to do
+function M.import_legacy(cwd)
 	cwd = cwd or vim.fn.getcwd()
-	if not M.has_workspace(cwd) then
-		vim.notify("nvim-agent: no workspace initialized — run workspace init first", vim.log.levels.WARN)
-		return false
+	local cfg_path = M.runtime_dir(cwd) .. "/config.json"
+	local cfg = read_json(cfg_path)
+	if not cfg or not cfg.workspace_def_dir then
+		return nil
+	end
+	local def_dir = cwd .. "/" .. cfg.workspace_def_dir
+	if vim.fn.isdirectory(def_dir) ~= 1 then
+		os.rename(cfg_path, cfg_path .. ".legacy")
+		return nil
 	end
 
-	local sessions = require("nvim-agent.session").list()
-	if #sessions == 0 then
-		vim.notify("nvim-agent: no active sessions to save", vim.log.levels.WARN)
-		return false
-	end
-	-- Lazy require to avoid a load-time cycle: agent.lua requires this
-	-- module at the top, so we cannot require("agent") at file scope.
-	local agent = require("nvim-agent.agent")
-	local ws_agents = {}
-	for _, sess in ipairs(sessions) do
-		agent.save_content(sess.name, sess.active_dir, cwd)
-		local role = nil
-		local rf = io.open(sess.active_dir .. "/role.md", "r")
-		if rf then
-			local content = rf:read("*a")
-			rf:close()
-			if content and not content:match("^%s*$") then
-				role = content:gsub("\n$", "")
+	local agent_mod = require("nvim-agent.agent")
+	local report = { agents = {}, workspaces = {}, needs_role = {} }
+
+	for _, path in ipairs(vim.fn.glob(def_dir .. "/agents/*/", false, true)) do
+		local name = path:match("/([^/]+)/$")
+		if name and not agent_mod.exists(name) then
+			local role = nil
+			local rf = io.open(path .. "role.md", "r")
+			if rf then
+				role = rf:read("*a")
+				rf:close()
+			end
+			local function slurp(file)
+				local f = io.open(path .. file, "r")
+				if not f then
+					return nil
+				end
+				local c = f:read("*a")
+				f:close()
+				return c
+			end
+			local needs_role = not role or role:match("^%s*$")
+			local ok = agent_mod.create(name, {
+				role = needs_role and agent_mod.placeholder_role(name) or role,
+				system_prompt = slurp("system_prompt.md"),
+				user_notes = slurp("user_notes.md"),
+				persistent_dirs = slurp("persistent_dirs.json"),
+			})
+			if ok then
+				local perms = slurp("permissions.json")
+				if perms then
+					local pf = io.open(agent_mod.dir(name, false) .. "/permissions.json", "w")
+					if pf then
+						pf:write(perms)
+						pf:close()
+					end
+				end
+				table.insert(report.agents, name)
+				if needs_role then
+					table.insert(report.needs_role, name)
+				end
 			end
 		end
-		table.insert(ws_agents, { name = sess.name, role = role })
 	end
 
-	M.workspace_save({ name = workspace_name, agents = ws_agents }, cwd)
-
-	local names = {}
-	for _, a in ipairs(ws_agents) do
-		table.insert(names, a.name)
+	for _, path in ipairs(vim.fn.glob(def_dir .. "/workspaces/*.json", false, true)) do
+		local legacy = read_json(path)
+		local name = legacy and legacy.name or vim.fn.fnamemodify(path, ":t:r")
+		if legacy and not M.exists(name, cwd) then
+			local m = M.new_manifest(name)
+			for _, a in ipairs(legacy.agents or {}) do
+				if a.name and agent_mod.exists(a.name) then
+					table.insert(m.agents, { name = a.name, agent = a.name })
+				end
+			end
+			M.save(m, cwd)
+			table.insert(report.workspaces, name)
+		end
 	end
-	vim.notify(
-		string.format(
-			"nvim-agent: workspace '%s' saved (%d agents: %s)",
-			workspace_name,
-			#ws_agents,
-			table.concat(names, ", ")
-		),
-		vim.log.levels.INFO
-	)
-	return true
+
+	os.rename(cfg_path, cfg_path .. ".legacy")
+
+	if #report.agents == 0 and #report.workspaces == 0 then
+		return nil
+	end
+	return report
 end
 
 return M

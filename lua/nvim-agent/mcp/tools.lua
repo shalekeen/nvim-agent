@@ -6,7 +6,7 @@ local filelock = require("filelock")
 
 -- Context directories inherited from the agent CLI's process environment.
 -- Every agent process launched by nvim-agent has these set:
---   NVIM_AGENT_ACTIVE_DIR  — session-specific dir (flavor files: system_prompt, notes, dirs, meta)
+--   NVIM_AGENT_ACTIVE_DIR  — session-specific dir (mirror of the agent: role, prompt, notes, dirs)
 --   NVIM_AGENT_PROCESS_DIR — process-level dir (ephemeral.json, shared by all sessions)
 --   NVIM_AGENT_RUNTIME_DIR — this Neovim instance's peer-state root
 --                            (<cwd>/.nvim-agent/instances/<instance_id>/)
@@ -525,32 +525,33 @@ M.definitions = {
 
 	{
 		name = "spawn_agent",
-		description = "Dynamically spawn a new workspace agent at runtime. Creates the agent's definition "
-			.. "directory, writes its context files (system prompt, role, user notes), creates a session, "
-			.. "and opens a terminal buffer. The new agent appears as a peer immediately and can be "
-			.. "communicated with via send_message/trigger_agent. Use this when work can be better "
-			.. "parallelized by adding more agents on the fly.",
+		description = "Add an agent to the live workspace, or relaunch one that has exited. "
+			.. "If `name` is an exited peer it is relaunched (other arguments ignored). If `name` is an "
+			.. "agent in the global library it is added to the workspace and launched. Otherwise "
+			.. "`system_prompt` and `role` are required: the agent is saved to the library's 'spawned' "
+			.. "section, added to the workspace, and launched. The agent appears as a peer immediately "
+			.. "and can be reached via send_message/trigger_agent.",
 		inputSchema = {
 			type = "object",
 			properties = {
 				name = {
 					type = "string",
-					description = "Name for the new agent (must be unique among active sessions)",
+					description = "Agent / session name. An exited peer's name relaunches it; a library agent's name adds it; anything else defines a new agent.",
 				},
 				system_prompt = {
 					type = "string",
-					description = "System prompt defining the agent's behavior and responsibilities",
+					description = "Behaviour prompt. Required only when defining a new agent.",
 				},
 				role = {
 					type = "string",
-					description = "Short role description for peer discovery (shown to all other agents)",
+					description = "Short role: what the agent does and what peers should delegate to it. Required only when defining a new agent.",
 				},
 				user_notes = {
 					type = "string",
-					description = "User notes with project conventions and constraints for the agent",
+					description = "Optional standing notes for a newly defined agent.",
 				},
 			},
-			required = { "name", "system_prompt", "role" },
+			required = { "name" },
 		},
 	},
 }
@@ -1235,20 +1236,16 @@ function M.execute(tool_name, arguments)
 	-- ----------------------------------------------------------------
 	elseif tool_name == "spawn_agent" then
 		local name = arguments.name
-		local system_prompt = arguments.system_prompt
-		local role_text = arguments.role
+		local system_prompt = arguments.system_prompt or ""
+		local role_text = arguments.role or ""
 		local notes = arguments.user_notes or ""
 
 		if not name or name == "" then
 			return { { type = "text", text = "Error: 'name' is required" } }, true
 		end
-		if not system_prompt or system_prompt == "" then
-			return { { type = "text", text = "Error: 'system_prompt' is required" } }, true
-		end
-		if not role_text or role_text == "" then
-			return { { type = "text", text = "Error: 'role' is required" } }, true
-		end
 
+		-- Whether this relaunches, adds, or defines is decided on the Neovim
+		-- side (launcher.spawn), which knows the live workspace and library.
 		local ok, err = nvim_rpc.spawn_agent(name, system_prompt, role_text, notes)
 		if not ok then
 			return { { type = "text", text = "Error spawning agent: " .. (err or "unknown") } }, true
@@ -1258,9 +1255,8 @@ function M.execute(tool_name, arguments)
 			{
 				type = "text",
 				text = string.format(
-					"Agent '%s' spawned successfully. Role: %s\n\nUse trigger_agent('%s', ...) to send it work.",
+					"Agent '%s' is now running in the workspace.\n\nUse trigger_agent('%s', ...) to send it work.",
 					name,
-					role_text,
 					name
 				),
 			},

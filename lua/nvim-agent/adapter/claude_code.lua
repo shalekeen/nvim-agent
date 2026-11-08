@@ -7,8 +7,9 @@ local M = adapter_base.new({})
 -- Permission profiles
 --
 -- Named profiles define which Claude Code tools an agent is allowed to use.
--- Agents declare their profile via a "permissions.json" file in their
--- definition directory, or via a "permissions" field in the workspace JSON.
+-- Agents declare their profile via an optional "permissions.json" in their
+-- library directory (~/.nvim-agent/agents/<name>/), which is mirrored into
+-- the session's active/ dir at launch and read from there.
 --
 -- Format of permissions.json:
 --   { "profile": "<name>" }                — use a named profile
@@ -98,42 +99,29 @@ local PERMISSION_PROFILES = {
 PERMISSION_PROFILES["read-only"] = PERMISSION_PROFILES["qa"]
 PERMISSION_PROFILES["no-code"] = PERMISSION_PROFILES["oversight"]
 
---- Resolve permissions for an agent. Checks (in order):
----   1. permissions.json in the agent's definition directory
+--- Resolve permissions for a session. Checks (in order):
+---   1. <session.active_dir>/permissions.json (mirrored from the agent)
 ---   2. Default "full" profile
---- @param agent_name string
---- @param cwd string|nil
+--- @param session table
 --- @return table  { allow: string[], deny: string[] }
-function M:get_agent_permissions(agent_name, cwd)
-	cwd = cwd or vim.fn.getcwd()
-	local agent_mod = require("nvim-agent.agent")
-
-	-- Try to read permissions.json from the agent's definition directory
-	local def_dir = agent_mod.content_dir(agent_name, cwd)
-	if def_dir then
-		local perm_path = def_dir .. "/permissions.json"
-		local f = io.open(perm_path, "r")
+function M:get_agent_permissions(session)
+	local active_dir = session and session.active_dir
+	if active_dir then
+		local f = io.open(active_dir .. "/permissions.json", "r")
 		if f then
 			local content = f:read("*a")
 			f:close()
 			local ok, data = pcall(vim.json.decode, content)
 			if ok and type(data) == "table" then
-				-- If it specifies a named profile, use that
 				if data.profile and PERMISSION_PROFILES[data.profile] then
 					return PERMISSION_PROFILES[data.profile]
 				end
-				-- Otherwise treat it as a custom allow/deny spec
 				if data.allow then
-					return {
-						allow = data.allow,
-						deny = data.deny or {},
-					}
+					return { allow = data.allow, deny = data.deny or {} }
 				end
 			end
 		end
 	end
-
-	-- Default: full permissions
 	return PERMISSION_PROFILES["full"]
 end
 
@@ -150,11 +138,9 @@ function M:get_cmd(session)
 	local active_dir = session.active_dir
 	local debug_log = vim.fn.expand("~/.nvim-agent/claude-mcp-debug.log")
 
-	-- Three-layer composition:
-	--   1. config.nvim_agent_preamble (runtime contract — always present)
-	--   2. system_prompt.md (user-editable flavor base; falls back to default)
-	--   3. agent_prompt.md (user-editable per-agent addendum; optional)
-	-- See lua/nvim-agent/context/init.lua for the full contract.
+	-- Layered composition: core preamble, this adapter's context contract,
+	-- the agent's role, the agent's system prompt. See
+	-- lua/nvim-agent/context/init.lua:compose_system_prompt.
 	local prompt = require("nvim-agent.context").compose_system_prompt(active_dir)
 
 	-- Determine MCP config: per-session file if session given, else global settings
@@ -179,7 +165,7 @@ function M:get_cmd(session)
 	end
 
 	-- Apply per-agent tool permissions via --allowedTools
-	local perms = self:get_agent_permissions(session.name, vim.fn.getcwd())
+	local perms = self:get_agent_permissions(session)
 	if perms and perms.allow and #perms.allow > 0 then
 		table.insert(cmd, "--allowedTools")
 		for _, tool in ipairs(perms.allow) do
@@ -322,10 +308,9 @@ if [ -n "$CWD" ] && [ -f "$CWD/PROJECT.md" ]; then
     echo ""
 fi
 
-# --- 2. Session preset (stable per session) ---------------------------------
-# .flavor_meta.json: changes only when the user switches flavor/checkpoint.
+# --- 2. Agent definition mirror (stable per session) -------------------------
 # persistent_dirs.json + user_notes.md: hand-edited, occasional changes.
-for f in .flavor_meta.json persistent_dirs.json user_notes.md; do
+for f in persistent_dirs.json user_notes.md; do
     if [ -f "$ACTIVE_DIR/$f" ]; then
         echo "--- $f ---"
         cat "$ACTIVE_DIR/$f"
