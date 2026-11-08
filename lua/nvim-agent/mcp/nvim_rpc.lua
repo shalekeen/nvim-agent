@@ -465,11 +465,6 @@ function M.edit_and_focus_buffer(filepath, content, start_line, end_line, save, 
 	os.remove(content_tmp)
 	os.remove(fp_tmp)
 
-	local result, err3 = nvim_lua_eval(lua_code)
-	-- Clean up in case Neovim side errored before os.remove
-	os.remove(content_tmp)
-	os.remove(fp_tmp)
-
 	if not result then
 		return nil, err3
 	end

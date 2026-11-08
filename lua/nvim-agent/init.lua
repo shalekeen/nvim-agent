@@ -513,8 +513,6 @@ local function apply_ws_flavor(agent_name, active_dir, sel, cwd)
 
 	-- ── Ensure .flavor_meta.json exists in BOTH active_dir and def_dir ──
 	-- workspace_launch checks for the def_dir copy to decide whether to skip
-	-- ── Ensure .flavor_meta.json exists in BOTH active_dir and def_dir ──
-	-- workspace_launch checks for the def_dir copy to decide whether to skip
 	-- the picker; the active_dir copy drives session UIs (statusline, list
 	-- pickers). For sel.type == "global" both are already populated above.
 	-- For the other branches we plant the marker ourselves, using the
