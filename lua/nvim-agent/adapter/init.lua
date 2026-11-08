@@ -25,16 +25,42 @@ function M.base:get_system_prompt()
 end
 
 --- Return the permission profile for a given agent.
---- Adapters override this to provide agent-specific permissions.
+---
+--- The base grants NOTHING. Permission strings are inherently CLI-specific
+--- (Claude Code spells them "Bash(*)" / "mcp__nvim-agent__*"; other CLIs
+--- have their own grammar or no per-tool model at all), so a neutral
+--- default is the empty profile. Adapters whose CLI has a permission model
+--- override this — see claude_code.lua for a profile-based implementation
+--- that reads <def_dir>/agents/<name>/permissions.json.
 --- @param agent_name string
 --- @param cwd string|nil
 --- @return table  { allow: string[], deny: string[] }
 function M.base:get_agent_permissions(agent_name, cwd)
-	-- Default: full permissions for backward compatibility
-	return {
-		allow = { "Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "Glob(*)", "Grep(*)", "mcp__nvim-agent__*" },
-		deny = {},
-	}
+	return { allow = {}, deny = {} }
+end
+
+--- Return the "how context reaches you" section of the system prompt
+--- (layer 1b, inserted right after config.nvim_agent_preamble).
+---
+--- The core preamble is CLI-neutral: it lists the context files nvim-agent
+--- maintains and the MCP tool catalogue, but says nothing about HOW those
+--- files get in front of the agent, because that depends on the CLI
+--- (pre-prompt hook, stdin shim, or nothing at all). This method is where
+--- the adapter states that contract, in its own CLI's vocabulary.
+---
+--- The base default assumes a CLI with no pre-prompt injection and tells
+--- the agent to read the files on demand. Adapters with a hook override it.
+--- Return "" to contribute nothing.
+--- @return string
+function M.base:get_context_contract()
+	return [[## How context reaches you
+
+This CLI has no automatic pre-prompt injection configured, so the context files listed
+above are NOT in your prompt by default. Read them on demand with the read_file MCP tool
+using the directory paths above whenever you need fresh editor state (ephemeral.json),
+peer messages (messages/<your name>.md under the runtime dir), or your own history.
+Use the MCP tools for file reads and edits so changes land in the user's live Neovim
+buffers rather than bypassing the editor.]]
 end
 
 function M.base:on_enter(bufnr)

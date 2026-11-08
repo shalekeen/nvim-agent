@@ -190,6 +190,30 @@ function M:get_cmd(session)
 	return cmd
 end
 
+--- Layer 1b of the composed system prompt: Claude Code's context contract.
+--- The neutral core preamble (config.nvim_agent_preamble) lists WHAT context
+--- files exist; this states HOW they reach the agent under Claude Code (the
+--- UserPromptSubmit hook written by this adapter) and which tool surface to
+--- use, naming Claude Code's own built-ins. It lives here, not in config.lua,
+--- so adapters for CLIs without hooks are never told about one.
+function M:get_context_contract()
+	return [[## How context reaches you (Claude Code)
+
+A UserPromptSubmit hook runs before every prompt you receive and prepends the context
+files listed above to the user's message, inside a "=== NEOVIM EDITOR CONTEXT ===" block.
+You do not need to fetch them yourself: they are already in your context, refreshed on
+every turn.
+
+## CRITICAL: File Operations MUST Use MCP Tools
+
+DO NOT use the built-in Read, Write, Edit, or Bash file tools. Use the nvim-agent MCP tools
+(read_file, edit_buffer, search_file, ...). The MCP tools update the user's Neovim buffers
+in real-time. Built-in tools bypass the editor.
+
+If you don't see MCP tools in your tool list, notify the user that the MCP server may not be
+connected.]]
+end
+
 --- Write a per-session MCP settings file at session.dir/mcp-settings.json.
 --- Includes the nvim-agent MCP server with session-specific env vars
 --- and the UserPromptSubmit hook.

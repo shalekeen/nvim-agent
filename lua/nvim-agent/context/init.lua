@@ -56,11 +56,15 @@ local function read_file(path)
     return content
 end
 
---- Build the three-layer system prompt for a session, in order:
+--- Build the layered system prompt for a session, in order:
 ---
----   1. config.nvim_agent_preamble  -- the runtime contract from
----      nvim-agent itself (always present; not affected by user edits to
----      flavor files).
+---   1. config.nvim_agent_preamble  -- the CLI-neutral runtime contract
+---      from nvim-agent itself (always present; not affected by user edits
+---      to flavor files).
+---   1b. adapter:get_context_contract()  -- the active adapter's statement
+---      of HOW context reaches the agent under this CLI (pre-prompt hook
+---      vs. read-on-demand) and which tool surface to use. OPTIONAL —
+---      omitted when no adapter is active or it returns "".
 ---   2. <active_dir>/system_prompt.md    -- the user-editable flavor prompt.
 ---      Falls back to config.default_system_prompt when the file is empty
 ---      or missing.
@@ -80,6 +84,17 @@ function M.compose_system_prompt(active_dir)
 
     if cfg.nvim_agent_preamble and cfg.nvim_agent_preamble ~= "" then
         table.insert(parts, cfg.nvim_agent_preamble)
+    end
+
+    -- Layer 1b: the adapter's context contract. CLI-specific by nature
+    -- (hooks, native tool names), so it lives on the adapter rather than
+    -- in the neutral core preamble above.
+    local adapter = require("nvim-agent.adapter").get_active()
+    if adapter and adapter.get_context_contract then
+        local contract = adapter:get_context_contract()
+        if type(contract) == "string" and contract ~= "" then
+            table.insert(parts, contract)
+        end
     end
 
     local sys = active_dir and read_file(active_dir .. "/system_prompt.md")

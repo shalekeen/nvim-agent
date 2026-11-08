@@ -85,6 +85,45 @@ function M:get_cmd(session)
 end
 
 ------------------------------------------------------------------------
+-- §1b. get_context_contract()   ── OPTIONAL (strongly recommended)
+--
+-- Layer 1b of the composed system prompt, inserted right after the core
+-- preamble. The preamble (config.lua) is CLI-neutral: it lists the context
+-- files and the MCP tool catalogue but deliberately says nothing about HOW
+-- those files reach the agent, because that depends on your CLI. Return a
+-- short section that states, in your CLI's own vocabulary:
+--   - whether context is injected automatically (pre-prompt hook, stdin
+--     shim) or must be read on demand via read_file
+--   - which native tools, if any, the agent should avoid in favour of the
+--     nvim-agent MCP tools
+-- The base default assumes no injection and tells the agent to read the
+-- files on demand — correct for a CLI with no hooks. Delete this function
+-- if that is all you need.
+------------------------------------------------------------------------
+
+function M:get_context_contract()
+	return [[## How context reaches you (your-cli)
+
+A pre-prompt hook prepends the context files listed above to every prompt, so they are
+already in your context each turn. Use the nvim-agent MCP tools for all file reads and
+edits so changes land in the user's live Neovim buffers.]]
+end
+
+------------------------------------------------------------------------
+-- §1c. get_agent_permissions(agent_name, cwd)   ── OPTIONAL
+--
+-- Per-agent tool permissions. The base returns { allow = {}, deny = {} }
+-- because permission grammar is CLI-specific. If your CLI has a per-tool
+-- permission model, override this and have get_cmd() translate the result
+-- into the CLI's flag (see claude_code.lua: named profiles resolved from
+-- <def_dir>/agents/<name>/permissions.json, passed via --allowedTools).
+------------------------------------------------------------------------
+
+-- function M:get_agent_permissions(agent_name, cwd)
+--     return { allow = { "your-cli-tool-pattern" }, deny = {} }
+-- end
+
+------------------------------------------------------------------------
 -- §2. setup_session_mcp(session)   ── OPTIONAL (recommended if CLI has MCP)
 --
 -- Write per-session config the CLI consumes at launch. Called fresh for

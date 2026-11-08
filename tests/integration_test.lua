@@ -86,11 +86,13 @@ check(
 )
 
 -- ---------------------------------------------------------------------------
--- 2. context.compose_system_prompt — verifies the three-layer composition:
---      1. config.nvim_agent_preamble  (always first)
---      2. <active_dir>/system_prompt.md (or config.default_system_prompt)
---      3. <active_dir>/agent_prompt.md  (omitted when empty/missing)
---    Each non-empty layer is joined by a single blank line.
+-- 2. context.compose_system_prompt — verifies the layered composition:
+--      1.  config.nvim_agent_preamble  (always first)
+--      1b. adapter:get_context_contract() (omitted when no adapter / "")
+--      2.  <active_dir>/system_prompt.md (or config.default_system_prompt)
+--      3.  <active_dir>/agent_prompt.md  (omitted when empty/missing)
+--    Each non-empty layer is joined by a single blank line. The first
+--    block of assertions runs with NO active adapter, so layer 1b is absent.
 -- ---------------------------------------------------------------------------
 
 local context = require("nvim-agent.context")
@@ -150,6 +152,72 @@ assert_eq("compose: preamble-only (everything else empty)", p_only_preamble, "PR
 vim.fn.delete(empty_dir, "rf")
 
 vim.fn.delete(tmp_active, "rf")
+
+-- ---------------------------------------------------------------------------
+-- 2b. Layer 1b: the active adapter's context contract sits between the
+--     preamble and the flavor prompt. This is where CLI-specific text (hook
+--     names, native tool names, permission grammar) must live — never in
+--     the core preamble — so the plugin can host other agent harnesses.
+-- ---------------------------------------------------------------------------
+
+local adapter_mod = require("nvim-agent.adapter")
+config.setup({ default_system_prompt = "BASE_PROMPT", nvim_agent_preamble = "PREAMBLE" })
+
+adapter_mod.set_active(adapter_mod.new({
+	get_context_contract = function()
+		return "CONTRACT"
+	end,
+}))
+assert_eq(
+	"compose: adapter contract is layer 1b (after preamble, before flavor)",
+	context.compose_system_prompt(nil),
+	"PREAMBLE\n\nCONTRACT\n\nBASE_PROMPT"
+)
+
+adapter_mod.set_active(adapter_mod.new({
+	get_context_contract = function()
+		return ""
+	end,
+}))
+assert_eq("compose: empty adapter contract is dropped", context.compose_system_prompt(nil), "PREAMBLE\n\nBASE_PROMPT")
+
+-- Base adapter defaults are CLI-neutral: read-on-demand contract, no grants.
+local base = adapter_mod.new({})
+local base_contract = base:get_context_contract()
+check("base contract is a non-empty string", type(base_contract) == "string" and #base_contract > 0)
+check(
+	"base contract carries no Claude Code vocabulary",
+	not base_contract:find("UserPromptSubmit") and not base_contract:find("Claude"),
+	base_contract
+)
+local base_perms = base:get_agent_permissions("anyone", "/nonexistent")
+check(
+	"base permissions grant nothing",
+	type(base_perms) == "table" and #base_perms.allow == 0 and #base_perms.deny == 0,
+	vim.inspect(base_perms)
+)
+
+-- The bundled Claude Code adapter supplies the hook contract + its own grants.
+local cc = require("nvim-agent.adapter.claude_code")
+check("claude_code contract names the UserPromptSubmit hook", cc:get_context_contract():find("UserPromptSubmit") ~= nil)
+check("claude_code contract warns off built-in file tools", cc:get_context_contract():find("built%-in Read") ~= nil)
+check(
+	"claude_code default permissions are its 'full' profile",
+	vim.tbl_contains(cc:get_agent_permissions("anyone", "/nonexistent").allow, "mcp__nvim-agent__*")
+)
+
+-- The shipped core preamble must stay free of any harness's vocabulary.
+local shipped_preamble = config.defaults.nvim_agent_preamble
+check(
+	"core preamble has no hook / Claude Code / built-in tool references",
+	not shipped_preamble:find("UserPromptSubmit")
+		and not shipped_preamble:find("Claude")
+		and not shipped_preamble:find("built%-in Read")
+		and not shipped_preamble:find("CRITICAL"),
+	"preamble still contains CLI-specific text"
+)
+
+adapter_mod.set_active(nil)
 
 -- ---------------------------------------------------------------------------
 -- 3. flavor.list() filters reserved names — covers the agent_templates fix.

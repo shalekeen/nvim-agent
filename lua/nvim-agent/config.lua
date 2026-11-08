@@ -19,14 +19,19 @@ M.defaults = {
 		split_direction = "vertical",
 		split_size = 0.4,
 	},
-	-- Layer 1 of the composed system prompt: the runtime contract from
-	-- nvim-agent itself (env vars, MCP tool catalogue, hook injection
-	-- semantics, multi-agent coordination). Always emitted first so it
-	-- can't be deleted by editing flavor or per-agent prompt files; lives
-	-- here rather than in ~/.claude/CLAUDE.md so it ONLY reaches agents
-	-- launched by nvim-agent — never the user's regular standalone claude
-	-- sessions. See lua/nvim-agent/context/init.lua:compose_system_prompt
-	-- for the full layer ordering.
+	-- Layer 1 of the composed system prompt: the CLI-neutral runtime
+	-- contract from nvim-agent itself (directory layout, context-file
+	-- catalogue, MCP tool catalogue, multi-agent coordination). Always
+	-- emitted first so it can't be deleted by editing flavor or per-agent
+	-- prompt files; lives here rather than in any CLI-global instruction
+	-- file so it ONLY reaches agents launched by nvim-agent.
+	--
+	-- Deliberately NOT here: anything that depends on the CLI — how context
+	-- is delivered (pre-prompt hook vs. read-on-demand), which native file
+	-- tools to avoid, permission grammar. The active adapter supplies that
+	-- as layer 1b via adapter:get_context_contract(). Keep this text free
+	-- of Claude Code (or any other harness) vocabulary. See
+	-- lua/nvim-agent/context/init.lua:compose_system_prompt for ordering.
 	nvim_agent_preamble = [[
 You are working inside Neovim via the nvim-agent plugin.
 
@@ -36,7 +41,8 @@ Context is split across three directories:
 - Runtime dir  ($NVIM_AGENT_RUNTIME_DIR): $NVIM_AGENT_CWD/.nvim-agent/instances/<instance-id>/
                                           peer state for THIS Neovim instance only
 
-A UserPromptSubmit hook automatically injects these context files before each prompt:
+nvim-agent maintains these context files for you. How they reach you depends on the
+CLI you are running in and is described in the "How context reaches you" section below:
 - .flavor_meta.json           -- (session dir) Your active flavor and checkpoint
 - user_notes.md               -- (session dir) User preferences and constraints
 - persistent_dirs.json        -- (session dir) Important code paths to reference
@@ -53,12 +59,12 @@ Runtime-dir files are scoped to this Neovim instance: your peers are exactly the
 agents hosted by the same Neovim. Agents in other Neovim instances, even on the same
 project, are invisible to you and you to them.
 
-## CRITICAL: File Operations MUST Use MCP Tools
+## MCP Tools
 
-DO NOT use the built-in Read, Write, Edit, or Bash file tools. Use the MCP tools below.
-The MCP tools update the user's Neovim buffers in real-time. Built-in tools bypass the editor.
-
-If you don't see MCP tools in your tool list, notify the user that the MCP server may not be connected.
+The tools below operate on the user's live Neovim buffers: edits appear in the editor
+immediately and never clobber unsaved work. Prefer them over any file tools native to
+your CLI. If you don't see them in your tool list, tell the user the MCP server may not
+be connected.
 
 ---
 
@@ -218,7 +224,8 @@ presenting it.
 
 ## Interpreting the Neovim Context
 
-Before each prompt, the plugin injects four context files. Use them as follows:
+nvim-agent maintains four context files for you (the runtime preamble above explains
+how they reach you in this CLI). Use them as follows:
 
 ### ephemeral.json (refreshed every prompt)
 - **open_buffers**: Files the user has open. Prioritize these -- they indicate

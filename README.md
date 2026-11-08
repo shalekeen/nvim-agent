@@ -65,14 +65,15 @@ return {
 | `auto_write_context` | `true` | Refresh `ephemeral.json` when switching to an agent buffer. |
 | `terminal.split_direction` | `"vertical"` | `"vertical"` or `"horizontal"`. |
 | `terminal.split_size` | `0.4` | Fraction of the screen the agent split takes. |
-| `nvim_agent_preamble` | (built-in) | Layer 1 of the composed system prompt — the runtime contract from nvim-agent (MCP tools, hook contract, coordination rules). Always emitted first; cannot be removed by editing flavor or per-agent prompt files. Override only if you need to customize how nvim-agent introduces itself to the agent. |
+| `nvim_agent_preamble` | (built-in) | Layer 1 of the composed system prompt — the CLI-neutral runtime contract from nvim-agent (directory layout, context-file catalogue, MCP tools, coordination rules). Always emitted first; cannot be removed by editing flavor or per-agent prompt files. The CLI-specific part (how context is delivered, which native tools to avoid) is layer 1b and comes from the adapter. Override only if you need to customize how nvim-agent introduces itself to the agent. |
 | `default_system_prompt` | (built-in) | Layer 2 fallback. Used when `<active_dir>/system_prompt.md` is missing or empty. Also seeded into newly created flavors as their initial `system_prompt.md`. |
 
 ### System prompt composition
 
-Every nvim-agent session's system prompt is built from three layers, joined by blank lines. Empty layers are dropped:
+Every nvim-agent session's system prompt is built from these layers, joined by blank lines. Empty layers are dropped:
 
-1. **`nvim_agent_preamble`** (config option above) — the plugin's runtime contract. Tells the agent about MCP tools, the UserPromptSubmit hook, env vars, and multi-agent coordination. Always present so editing your flavor can't remove it.
+1. **`nvim_agent_preamble`** (config option above) — the plugin's CLI-neutral runtime contract. Tells the agent about the directory layout, the context files, the MCP tools, and multi-agent coordination. Always present so editing your flavor can't remove it.
+1b. **Adapter context contract** (`adapter:get_context_contract()`) — how context actually reaches the agent under the CLI in use. The bundled Claude Code adapter describes its `UserPromptSubmit` hook and tells the agent not to use Claude Code's built-in file tools; the base adapter default tells a hook-less CLI to read the files on demand. Per-agent tool permissions likewise come from `adapter:get_agent_permissions()`, whose base default grants nothing.
 2. **`<active_dir>/system_prompt.md`** — the user-editable broad-behavior prompt (the "flavor prompt"). Defaults to `default_system_prompt` when empty/missing. Edit with `:NvimAgent edit prompt`.
 3. **`<active_dir>/agent_prompt.md`** — an optional per-agent persona addendum. Use this in workspace mode so each agent definition has its own narrow specialization on top of the shared flavor prompt. Edit with `:NvimAgent edit agent`. Omitted entirely when missing.
 

@@ -534,8 +534,8 @@ function M.workspace_launch(workspace, cwd)
 	local agent_mod = require("nvim-agent.agent")
 	local agent_entries = workspace.agents or {}
 
-	-- Write .claude/settings.json in the project dir so agents don't get
-	-- interrupted by permission prompts on every file/bash operation.
+	-- Ask the adapter to write project-scoped CLI permissions so agents don't
+	-- get interrupted by permission prompts on every file/bash operation.
 	local adapter = require("nvim-agent.adapter").get_active()
 	if adapter and adapter.setup_project_permissions then
 		adapter:setup_project_permissions(cwd)

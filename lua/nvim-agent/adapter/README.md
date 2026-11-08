@@ -22,6 +22,8 @@ points. Implement the ones whose lifecycle hook you need.
 | Method | When called | Required? | Purpose |
 |---|---|:-:|---|
 | `get_cmd(session)` | When a session's terminal is opened (`terminal.open`) | ✅ | Return the argv array to pass to `termopen`. Must succeed even when called with a nil session (defensive default). |
+| `get_context_contract()` | Every time the system prompt is composed (`context.compose_system_prompt`, i.e. inside `get_cmd`) | ❌ | Return the "how context reaches you" section (layer 1b): whether context is injected per prompt or read on demand, and which native tools to avoid, in your CLI's vocabulary. Base default tells the agent to read the files on demand. |
+| `get_agent_permissions(name, cwd)` | By your own `get_cmd` (the harness never calls it) | ❌ | Per-agent tool permissions. Base returns `{ allow = {}, deny = {} }` because permission grammar is CLI-specific; override if your CLI has a per-tool model. |
 | `setup()` | Once at plugin startup (from `nvim-agent.setup`) | ❌ | Global one-time install: write hook scripts, register MCP server in CLI's config, install permissions, write CLI-side instruction file. Must be **idempotent** — runs on every Neovim startup. |
 | `setup_session_mcp(session)` | Before each session's `termopen` (from `terminal.open`) | ❌ | Write per-session config the CLI reads at launch (typically MCP server pointer + injection hook). Fresh every session, no idempotency required. |
 | `setup_project_permissions(cwd)` | When a workspace is launched (`commands.lua`, `init.lua`) | ❌ | Write per-project CLI config so agents in that project don't get hammered with permission prompts. Idempotent. |
@@ -32,11 +34,16 @@ Only `get_cmd(session)` is mandatory. Everything else is optional and
 checked with `if adapter.<method> then` before being called, so leaving
 something off is safe.
 
-A few methods exist on the base prototype but are **not** called by the
-harness — they're adapter-private helpers that you can override if your
-implementation wants them. `get_agent_permissions(name, cwd)` and
-`get_system_prompt()` fall in this bucket. Don't feel obligated to
-implement them.
+`get_system_prompt()` also exists on the base prototype but is **not**
+called by the harness — it's an adapter-private helper you can override if
+your implementation wants it.
+
+Everything CLI-specific that used to live in core now hangs off the
+adapter: the base prototype's `get_agent_permissions` grants nothing and
+its `get_context_contract` describes a hook-less, read-on-demand CLI. The
+core preamble in `config.lua` is kept free of any harness's vocabulary
+(no hook names, no native tool names), so a new adapter never ships a
+preamble that lies to its agent about how context arrives.
 
 ---
 
@@ -64,12 +71,17 @@ same session table. Fields you can rely on:
 
 ## 3. Composing the system prompt
 
-The system prompt is built in three layers via
+The system prompt is built in layers via
 `nvim-agent.context.compose_system_prompt(active_dir)`:
 
-1. **Preamble** (`config.nvim_agent_preamble`) — the runtime contract that
-   tells the agent how to interpret editor context. Always included.
-   Authored once by nvim-agent itself; users don't edit it.
+1. **Preamble** (`config.nvim_agent_preamble`) — the CLI-neutral runtime
+   contract: directory layout, the context files nvim-agent maintains, the
+   MCP tool catalogue, coordination rules. Always included. Authored once
+   by nvim-agent itself; users don't edit it.
+1b. **Adapter context contract** (`adapter:get_context_contract()`) — your
+   CLI's statement of how those files reach the agent (hook vs. on-demand)
+   and which native tools to avoid. Omitted if no adapter is active or it
+   returns `""`.
 2. **`<active_dir>/system_prompt.md`** — the user-editable flavor base.
    Falls back to `config.default_system_prompt` if empty/missing.
 3. **`<active_dir>/agent_prompt.md`** — optional per-agent addendum. Skipped
@@ -77,8 +89,8 @@ The system prompt is built in three layers via
 
 Layers are joined with blank lines. **Always go through
 `compose_system_prompt(active_dir)`** rather than reading `system_prompt.md`
-directly — otherwise you skip the preamble and the agent won't know how to
-read the per-prompt context the hook injects.
+directly — otherwise you skip the preamble and your contract, and the agent
+won't know how to read the context it is given.
 
 ```lua
 function M:get_cmd(session)
