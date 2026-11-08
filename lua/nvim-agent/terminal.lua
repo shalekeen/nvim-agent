@@ -318,8 +318,9 @@ function M.hide_all()
 					pcall(vim.api.nvim_set_current_tabpage, tab)
 					pcall(vim.cmd, "tabclose")
 				else
-					-- Only window in the only tab: swap in an empty buffer instead.
-					local scratch = vim.api.nvim_create_buf(true, false)
+					-- Only window in the only tab: swap in an unlisted scratch buffer.
+					local scratch = vim.api.nvim_create_buf(false, true)
+					vim.bo[scratch].bufhidden = "wipe"
 					vim.api.nvim_win_set_buf(win, scratch)
 				end
 			end

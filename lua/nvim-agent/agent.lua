@@ -17,10 +17,12 @@
 --                                  MCP tool; same files, listed in their own
 --                                  section so they don't crowd out your own.
 --
--- Agents are the ONLY unit of definition. A project that wants a variant of
--- an agent copies it under a new name (M.copy) and edits the copy. A live
--- session's active/ dir is a mirror of its agent: edits made there are
--- written straight back with M.save.
+-- Agents are the ONLY unit of definition. A live session's active/ dir is
+-- built from an agent (M.load) plus that workspace's override files
+-- (workspace.apply_overrides). Edits made in a session land in the
+-- overrides; M.save promotes a session's files back to the global agent
+-- (`:NvimAgent agent push`). A permanently different variant is a copy
+-- under a new name (M.copy).
 
 local M = {}
 

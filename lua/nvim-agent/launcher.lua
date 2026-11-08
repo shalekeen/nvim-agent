@@ -184,6 +184,8 @@ function M.launch(manifest, cwd)
 	if #created == 0 then
 		if #(manifest.agents or {}) == 0 then
 			notify("workspace '" .. manifest.name .. "' is live but has no agents yet — add one with :NvimAgent agent add")
+		else
+			notify("workspace '" .. manifest.name .. "' is already live (every member has a session)")
 		end
 		return
 	end
@@ -1244,7 +1246,8 @@ function M.team_status(cwd)
 		local overrides = workspace_mod().list_overrides(m.name, e.name, cwd)
 		local marker = (sess and sess.id == sm.current_id) and "*" or " "
 		table.insert(lines, string.format("%s %-16s %-12s agent: %s", marker, e.name, state, e.agent))
-		table.insert(lines, "    role:  " .. trunc(agent_mod().read_role(e.agent) or (sess and read_file(sess.active_dir .. "/role.md")) or "(none)", 100))
+		local role = (sess and read_file(sess.active_dir .. "/role.md")) or agent_mod().read_role(e.agent) or "(none)"
+		table.insert(lines, "    role:  " .. trunc(role, 100))
 		if task then
 			table.insert(lines, "    task:  " .. trunc(task, 100) .. (updated and ("   (" .. updated .. ")") or ""))
 		end

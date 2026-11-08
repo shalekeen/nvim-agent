@@ -41,12 +41,18 @@ local function list_peer_names()
 	if RUNTIME_DIR == "" then
 		return peers
 	end
-	for _, path in ipairs(vim.fn.glob(project_comm_dir("status") .. "/*.json", false, true)) do
-		local name = path:match("/([^/]+)%.json$")
+	-- readdir, not glob: agent names may contain glob metacharacters.
+	local status_dir = project_comm_dir("status")
+	if vim.fn.isdirectory(status_dir) ~= 1 then
+		return peers
+	end
+	for _, entry in ipairs(vim.fn.readdir(status_dir)) do
+		local name = entry:match("^(.+)%.json$")
 		if name and name ~= AGENT_NAME then
 			table.insert(peers, name)
 		end
 	end
+	table.sort(peers)
 	return peers
 end
 
@@ -1207,9 +1213,11 @@ function M.execute(tool_name, arguments)
 
 		local hist_dir = project_comm_dir("history")
 		local parts = {}
-		for _, path in ipairs(vim.fn.glob(hist_dir .. "/*.md", false, true)) do
-			local agent_name = path:match("/([^/]+)%.md$") or "?"
-			local content = read_file_contents(path)
+		local entries = vim.fn.isdirectory(hist_dir) == 1 and vim.fn.readdir(hist_dir) or {}
+		table.sort(entries)
+		for _, entry in ipairs(entries) do
+			local agent_name = entry:match("^(.+)%.md$")
+			local content = agent_name and read_file_contents(hist_dir .. "/" .. entry)
 			if content and not content:match("^%s*$") then
 				table.insert(parts, "### " .. agent_name .. "\n" .. content)
 			end

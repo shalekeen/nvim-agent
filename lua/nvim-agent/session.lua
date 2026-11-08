@@ -55,12 +55,6 @@ local function process_dir_path()
 	return config.get().base_dir .. "/sessions/" .. M.instance_id
 end
 
---- Shared per-instance dir (ephemeral.json, tmux_captures.json live here).
---- @return string
-function M.get_process_dir()
-	return process_dir_path()
-end
-
 --- Create a session for `agent_name` under the session name `name`.
 --- Returns nil + error on a duplicate name.
 --- @param name string        Session name (unique within this instance)
