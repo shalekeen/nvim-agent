@@ -217,33 +217,35 @@ function M.activate(manifest, cwd)
 	local sm = session_mod()
 	local current = ws.get_current()
 
-	local function go()
-		if #(manifest.agents or {}) == 0 then
-			M.pick_agents(manifest, cwd, function(result)
-				if result then
-					M.launch(result, cwd)
+	-- Confirm the switch (stopping live agents) only once the target is
+	-- fully specified — i.e. AFTER the agent picker for an empty manifest —
+	-- so cancelling the picker never leaves the user with nothing running.
+	local function switch_and_launch(m)
+		local live = sm.list()
+		if current and current.name ~= m.name and #live > 0 then
+			ui().select({ "Yes — stop them and switch", "Cancel" }, {
+				prompt = string.format("Switch from '%s' to '%s'? (%d live agent%s will be stopped)", current.name, m.name, #live, #live == 1 and "" or "s"),
+				width = 80,
+			}, function(choice)
+				if choice and choice:match("^Yes") then
+					close_all_sessions()
+					M.launch(m, cwd)
 				end
 			end)
-		else
-			M.launch(manifest, cwd)
+			return
 		end
+		M.launch(m, cwd)
 	end
 
-	local live = sm.list()
-	if current and current.name ~= manifest.name and #live > 0 then
-		ui().select({ "Yes — stop them and switch", "Cancel" }, {
-			prompt = string.format("Switch from '%s' to '%s'? (%d live agent%s will be stopped)", current.name, manifest.name, #live, #live == 1 and "" or "s"),
-			width = 80,
-		}, function(choice)
-			if choice and choice:match("^Yes") then
-				close_all_sessions()
-				go()
+	if #(manifest.agents or {}) == 0 then
+		M.pick_agents(manifest, cwd, function(result)
+			if result then
+				switch_and_launch(result)
 			end
 		end)
 		return
 	end
-
-	go()
+	switch_and_launch(manifest)
 end
 
 ------------------------------------------------------------------------
