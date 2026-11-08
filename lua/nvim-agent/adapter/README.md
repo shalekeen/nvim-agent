@@ -136,8 +136,11 @@ agent via MCP tools) does.
 | `persistent_dirs.json` | Stable | Pinned code paths the agent should know about. |
 | `permissions.json` | Stable | Optional, adapter-specific tool permissions. |
 
-All of these are mirrored from `~/.nvim-agent/agents/<agent>/` at launch and
-written back there when edited in the session.
+All of these are mirrored from `~/.nvim-agent/agents/<agent>/` at launch, with
+any per-workspace override files (`<cwd>/.nvim-agent/workspaces/<ws>/<session>/`)
+laid on top. Edits made in the session are saved as workspace overrides, not
+to the global agent, so an adapter can treat `active_dir` as the effective
+definition and never needs to know about either source.
 
 ### Files in `session.process_dir` (shared across all sessions in this Neovim)
 

@@ -126,6 +126,9 @@ end
 function M.agent_restart(name)
 	launcher().restart_agent(name)
 end
+function M.agent_stop(name)
+	launcher().stop_agent(name)
+end
 
 ------------------------------------------------------------------------
 -- Agents: global library
@@ -147,15 +150,19 @@ function M.agent_list()
 	launcher().list_agents_ui()
 end
 
---- Write a live session's active_dir back to its agent. Edits made through
---- :NvimAgent edit ... already sync on save; this is the explicit form.
-function M.agent_save()
-	launcher().pick_session("Save session context to its agent", function(sess)
-		if not sess then
-			return vim.notify("nvim-agent: no sessions", vim.log.levels.WARN)
-		end
-		require("nvim-agent.autocmds").sync_session_to_agent(sess)
-	end)
+--- Push a session's current files to its GLOBAL agent and clear this
+--- workspace's overrides for it. Edits from a live session otherwise stay
+--- as workspace overrides.
+function M.agent_push(name)
+	launcher().push_agent(name)
+end
+--- Show which definition files each member overrides in the live workspace.
+function M.agent_overrides()
+	launcher().show_overrides_ui()
+end
+--- Drop one or all overrides for a member and reload from the global agent.
+function M.agent_reset(name, file)
+	launcher().reset_overrides(name, file)
 end
 
 --- Non-interactive spawn, called from the MCP server over RPC.
@@ -171,7 +178,30 @@ function M.session_list()
 	launcher().list_sessions_ui()
 end
 function M.session_switch(name)
+	local n = tonumber(name)
+	if n then
+		return launcher().jump_session(n)
+	end
 	launcher().switch_session(name)
+end
+function M.session_jump(n)
+	launcher().jump_session(n)
+end
+--- Type a line into a member's terminal.
+function M.send_message(name, text)
+	launcher().message_agent(name, text)
+end
+--- Floating overview of every member: state, role, task, mail, overrides.
+function M.team_status()
+	launcher().team_status()
+end
+--- Arrange every running agent in a grid / hide every agent window.
+function M.open_all()
+	require("nvim-agent.terminal").show_all()
+end
+function M.close_all()
+	local n = require("nvim-agent.terminal").hide_all()
+	vim.notify(string.format("nvim-agent: hid %d agent window%s", n, n == 1 and "" or "s"), vim.log.levels.INFO)
 end
 function M.pick_session(prompt, callback)
 	launcher().pick_session(prompt, callback)
@@ -186,13 +216,15 @@ local function current_active_dir()
 	return sess and sess.active_dir
 end
 
---- Sync whichever session owns `active_dir` back to its agent. Used after
---- programmatic writes (dir add/remove, note keymaps) that don't go through
---- the BufWritePost autocmd.
-function M.sync_session(active_dir)
+--- Record `file` in whichever session owns `active_dir` as a workspace
+--- override. Used after programmatic writes (dir add/remove, note keymaps)
+--- that don't go through the BufWritePost autocmd.
+--- @param active_dir string
+--- @param file string  one of agent.AGENT_FILES
+function M.sync_session(active_dir, file)
 	local sess = require("nvim-agent.session").get_by_active_dir(active_dir)
 	if sess then
-		require("nvim-agent.autocmds").sync_session_to_agent(sess, true)
+		launcher().sync_session_file(sess, file, true)
 	end
 end
 
@@ -267,7 +299,7 @@ function M.add_persistent_dir(tag, path, description, active_dir)
 		table.insert(entries, { tag = tag, path = path, description = description })
 	end
 	dirs_mod.save(entries, dirs_path)
-	M.sync_session(active_dir)
+	M.sync_session(active_dir, config.get().context_files.persistent_dirs)
 	vim.notify("nvim-agent: added directory '" .. tag .. "'", vim.log.levels.INFO)
 end
 
@@ -283,7 +315,7 @@ function M.remove_persistent_dir(tag, active_dir)
 		if entry.tag == tag then
 			table.remove(entries, i)
 			dirs_mod.save(entries, dirs_path)
-			M.sync_session(active_dir)
+			M.sync_session(active_dir, config.get().context_files.persistent_dirs)
 			vim.notify("nvim-agent: removed directory '" .. tag .. "'", vim.log.levels.INFO)
 			return
 		end
@@ -483,16 +515,14 @@ function M.graceful_quit()
 	end
 
 	local function do_quit()
-		for _, sess in ipairs(sessions) do
-			pcall(require("nvim-agent.autocmds").sync_session_to_agent, sess, true)
-		end
+		-- Nothing to persist: every edit already landed in its workspace override.
 		vim.cmd("qa!")
 	end
 
 	if #running == 0 then
 		return do_quit()
 	end
-	require("nvim-agent.ui").select({ "Quit (agents are synced first)", "Cancel" }, {
+	require("nvim-agent.ui").select({ "Quit (stops running agents)", "Cancel" }, {
 		prompt = string.format("%d agent(s) still running: %s", #running, table.concat(running, ", ")),
 		width = 70,
 	}, function(choice)
@@ -514,7 +544,7 @@ function M.statusline()
 		return ""
 	end
 	local ws = require("nvim-agent.workspace").get_current()
-	local s = string.format("Agent-%s: %s @ %s", sess.name, sess.agent or "?", ws and ws.name or "?")
+	local s = string.format("Agent-%s: %s%s @ %s", sess.name, sess.agent or "?", sess.overrides and "+" or "", ws and ws.name or "?")
 	if not session_mod.is_running(sess) then
 		s = s .. " (exited)"
 	end

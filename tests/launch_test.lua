@@ -142,6 +142,71 @@ require("nvim-agent.terminal").open(sess.id)
 check("open on a running session keeps its job", sess.jobid == job_before)
 
 -- ---------------------------------------------------------------------------
+-- 4b. Overrides: edits from the live session go to THIS workspace (the
+--     ephemeral one here), never to the global agent; relaunch reapplies
+--     them; reset drops them; push promotes them.
+-- ---------------------------------------------------------------------------
+
+local global_notes_path = sandbox .. "/base/agents/spawned/helper/user_notes.md"
+local global_notes_before = read(global_notes_path)
+local ov_path = cwd .. "/.nvim-agent/workspaces/ephemeral/helper/user_notes.md"
+
+local nf = io.open(sess.active_dir .. "/user_notes.md", "w")
+nf:write("project-specific note\n")
+nf:close()
+check("sync_session_file succeeds", L.sync_session_file(sess, "user_notes.md", true))
+check("override written under workspaces/ephemeral/<session>/", read(ov_path) == "project-specific note\n", tostring(read(ov_path)))
+check("global agent untouched by a session edit", read(global_notes_path) == global_notes_before)
+check("session records its overrides", sess.overrides and sess.overrides[1] == "user_notes.md")
+check("statusline marks overrides with +", require("nvim-agent").statusline():find("helper%+") ~= nil, require("nvim-agent").statusline())
+
+-- Stop (user-requested) → exited but still a member.
+L.stop_agent("helper")
+vim.wait(3000, function()
+	return sess.state == "exited"
+end)
+check("stop_agent marks the session exited", sess.state == "exited", sess.state)
+check("stop_agent keeps membership", W.find_entry(W.get_current(), "helper") ~= nil)
+
+-- Relaunch reloads global + override: the override wins.
+nf = io.open(sess.active_dir .. "/user_notes.md", "w")
+nf:write("stale mirror content\n")
+nf:close()
+L.restart_agent("helper", cwd)
+vim.wait(2000, function()
+	return sess.jobid ~= nil
+end)
+check("restart_agent relaunches", S.is_running(sess))
+-- restart reuses the existing session without reloading files (the mirror
+-- is authoritative while the session exists); a fresh session does reload.
+S.close(sess.id)
+L.restart_agent("helper", cwd)
+vim.wait(2000, function()
+	local s = S.get_by_name("helper")
+	return s ~= nil and s.jobid ~= nil
+end)
+sess = S.get_by_name("helper")
+check("fresh session applies the workspace override over the global", read(sess.active_dir .. "/user_notes.md") == "project-specific note\n", read(sess.active_dir .. "/user_notes.md"))
+check("fresh session records overrides", sess.overrides and sess.overrides[1] == "user_notes.md")
+
+-- reset one file → override gone, mirror back to global.
+L.reset_overrides("helper", "user_notes.md", cwd)
+check("reset removes the override file", read(ov_path) == nil)
+check("reset restores the global content in the mirror", read(sess.active_dir .. "/user_notes.md") == global_notes_before)
+check("reset clears sess.overrides", sess.overrides == nil)
+
+-- push → global updated, overrides cleared.
+nf = io.open(sess.active_dir .. "/user_notes.md", "w")
+nf:write("promoted note\n")
+nf:close()
+L.sync_session_file(sess, "user_notes.md", true)
+check("setup: override exists before push", read(ov_path) == "promoted note\n")
+L.push_agent("helper", cwd)
+check("push writes the global agent", read(global_notes_path) == "promoted note\n", read(global_notes_path))
+check("push clears the workspace override", read(ov_path) == nil)
+check("push clears sess.overrides", sess.overrides == nil)
+
+-- ---------------------------------------------------------------------------
 -- 5. library agent added by name via spawn (no prompt/role needed)
 -- ---------------------------------------------------------------------------
 
@@ -157,6 +222,29 @@ end)
 check("library agent running", S.is_running(S.get_by_name("lib-agent")))
 
 -- ---------------------------------------------------------------------------
+-- 5b. show_all / hide_all arrange and hide existing terminals without
+--     launching or stopping anything.
+-- ---------------------------------------------------------------------------
+
+local T = require("nvim-agent.terminal")
+local jobs_before = {}
+for _, s in ipairs(S.list()) do
+	jobs_before[s.name] = s.jobid
+end
+local shown = T.show_all(4)
+check("show_all shows every running session", shown == 2, shown)
+check("show_all assigns windows", S.get_by_name("helper").winnr ~= nil and S.get_by_name("lib-agent").winnr ~= nil)
+check("show_all launches nothing new", S.get_by_name("helper").jobid == jobs_before["helper"] and S.get_by_name("lib-agent").jobid == jobs_before["lib-agent"])
+local hidden = T.hide_all()
+check("hide_all hides at least the grid windows", hidden >= 2, hidden)
+check("hide_all keeps processes running", S.is_running(S.get_by_name("helper")) and S.is_running(S.get_by_name("lib-agent")))
+check("hide_all clears winnr", S.get_by_name("helper").winnr == nil)
+
+-- remove_entry must also drop overrides for the member.
+L.sync_session_file(S.get_by_name("helper"), "role.md", true)
+check("setup: helper has an override before remove", vim.fn.isdirectory(cwd .. "/.nvim-agent/workspaces/ephemeral/helper") == 1)
+
+-- ---------------------------------------------------------------------------
 -- 6. remove → session gone, status gone, manifest updated
 -- ---------------------------------------------------------------------------
 
@@ -164,6 +252,7 @@ L.remove_agent("helper", cwd)
 check("remove drops the session", S.get_by_name("helper") == nil)
 check("remove deletes the status file", vim.fn.filereadable(status_dir .. "/helper.json") == 0)
 check("remove persists to the manifest", #(W.read(W.EPHEMERAL, cwd).agents) == 1)
+check("remove deletes the member's overrides", vim.fn.isdirectory(cwd .. "/.nvim-agent/workspaces/ephemeral/helper") == 0)
 check("remove of a non-member is harmless", (function()
 	L.remove_agent("nobody", cwd)
 	return #(W.read(W.EPHEMERAL, cwd).agents) == 1

@@ -297,7 +297,7 @@ function M.add_entry(manifest, entry, cwd)
 	return true
 end
 
---- Remove a member and persist.
+--- Remove a member and persist. Also deletes the member's override files.
 --- @param manifest table
 --- @param session_name string
 --- @param cwd string|nil
@@ -309,7 +309,132 @@ function M.remove_entry(manifest, session_name, cwd)
 	end
 	table.remove(manifest.agents, idx)
 	M.save(manifest, cwd)
+	M.clear_overrides(manifest.name, session_name, nil, cwd)
 	return true
+end
+
+------------------------------------------------------------------------
+-- Per-workspace overrides
+--
+--   workspaces/<ws>/<session_name>/<file>
+--
+-- A member may override any of its agent's definition files for THIS
+-- workspace only. At launch the global agent is mirrored into active_dir
+-- first, then any override files are copied on top, so the hook (which
+-- reads active_dir) sees the override whenever one exists and the global
+-- file otherwise. Edits made from a live session are written to the
+-- override, never to the global agent; `agent push` promotes them.
+--
+-- Keyed by SESSION name (the manifest entry), which equals the agent name
+-- unless the same agent runs twice in one workspace — in which case each
+-- copy gets its own overrides, as it must.
+------------------------------------------------------------------------
+
+local function agent_files()
+	return require("nvim-agent.agent").AGENT_FILES
+end
+
+local function is_agent_file(file)
+	for _, f in ipairs(agent_files()) do
+		if f == file then
+			return true
+		end
+	end
+	return false
+end
+
+--- @param ws_name string
+--- @param session_name string
+--- @param cwd string|nil
+--- @return string
+function M.override_dir(ws_name, session_name, cwd)
+	return M.workspaces_dir(cwd) .. "/" .. ws_name .. "/" .. session_name
+end
+
+--- @param ws_name string
+--- @param session_name string
+--- @param file string  one of agent.AGENT_FILES
+--- @param cwd string|nil
+--- @return string
+function M.override_path(ws_name, session_name, file, cwd)
+	return M.override_dir(ws_name, session_name, cwd) .. "/" .. file
+end
+
+--- Files currently overridden for a member, in AGENT_FILES order.
+--- @return string[]
+function M.list_overrides(ws_name, session_name, cwd)
+	local out = {}
+	for _, f in ipairs(agent_files()) do
+		if vim.fn.filereadable(M.override_path(ws_name, session_name, f, cwd)) == 1 then
+			table.insert(out, f)
+		end
+	end
+	return out
+end
+
+--- Write (create or replace) one override file from `content`.
+--- @return boolean ok, string|nil err
+function M.write_override(ws_name, session_name, file, content, cwd)
+	if not is_agent_file(file) then
+		return false, "'" .. file .. "' is not an agent definition file"
+	end
+	local path = M.override_path(ws_name, session_name, file, cwd)
+	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
+	local f = io.open(path, "w")
+	if not f then
+		return false, "could not write " .. path
+	end
+	f:write(content)
+	f:close()
+	return true
+end
+
+--- Copy a file from `src_path` (typically a session's active_dir) into the
+--- member's override for `file`. This is the copy-on-first-edit step: the
+--- override starts as whatever the session currently has.
+--- @return boolean ok, string|nil err
+function M.copy_override_from(ws_name, session_name, file, src_path, cwd)
+	local f = io.open(src_path, "r")
+	if not f then
+		return false, "cannot read " .. src_path
+	end
+	local content = f:read("*a")
+	f:close()
+	return M.write_override(ws_name, session_name, file, content, cwd)
+end
+
+--- Delete one override (file given) or all overrides (file nil) for a member.
+function M.clear_overrides(ws_name, session_name, file, cwd)
+	if file then
+		local p = M.override_path(ws_name, session_name, file, cwd)
+		if vim.fn.filereadable(p) == 1 then
+			vim.fn.delete(p)
+		end
+		-- Drop the dir when it is now empty so the workspace stays tidy.
+		local dir = M.override_dir(ws_name, session_name, cwd)
+		if vim.fn.isdirectory(dir) == 1 and #vim.fn.readdir(dir) == 0 then
+			vim.fn.delete(dir, "d")
+		end
+		return
+	end
+	local dir = M.override_dir(ws_name, session_name, cwd)
+	if vim.fn.isdirectory(dir) == 1 then
+		vim.fn.delete(dir, "rf")
+	end
+end
+
+--- Copy every override the member has onto `target_dir` (a session
+--- active_dir that already holds the global agent's files).
+--- @return string[]  files that were applied
+function M.apply_overrides(ws_name, session_name, target_dir, cwd)
+	local applied = {}
+	for _, f in ipairs(M.list_overrides(ws_name, session_name, cwd)) do
+		local src = M.override_path(ws_name, session_name, f, cwd)
+		vim.fn.mkdir(target_dir, "p")
+		vim.fn.writefile(vim.fn.readfile(src, "b"), target_dir .. "/" .. f, "b")
+		table.insert(applied, f)
+	end
+	return applied
 end
 
 ------------------------------------------------------------------------

@@ -13,6 +13,8 @@ local SUBCOMMANDS = {
 	"close",
 	"toggle",
 	"refresh",
+	"status",
+	"send",
 	"workspace",
 	"agent",
 	"session",
@@ -25,8 +27,9 @@ local SUBCOMMANDS = {
 	"setup",
 }
 
+local OPEN_SUBS = { "all" }
 local WORKSPACE_SUBS = { "new", "load", "list", "remove", "rename", "save-as" }
-local AGENT_SUBS = { "add", "remove", "restart", "define", "copy", "edit", "delete", "list", "save" }
+local AGENT_SUBS = { "add", "remove", "stop", "restart", "define", "copy", "edit", "delete", "list", "push", "overrides", "reset" }
 local SESSION_SUBS = { "list", "switch" }
 local EDIT_SUBS = { "prompt", "notes", "dirs", "role" }
 local VIEW_SUBS = { "prompt", "notes", "dirs", "role" }
@@ -36,6 +39,8 @@ local TMUX_SUBS = { "add", "clear", "view" }
 local HISTORY_SUBS = { "agent", "workspace", "project" }
 
 local SECOND_LEVEL = {
+	open = OPEN_SUBS,
+	close = OPEN_SUBS,
 	workspace = WORKSPACE_SUBS,
 	agent = AGENT_SUBS,
 	session = SESSION_SUBS,
@@ -95,7 +100,6 @@ local function complete(_, cmd_line, _)
 	local args = parse_args(cmd_line)
 	table.remove(args, 1) -- "NvimAgent"
 
-	-- A trailing space means the user is starting a new (empty) argument.
 	local trailing = cmd_line:sub(-1) == " "
 	local n = #args + (trailing and 1 or 0)
 	local cur = trailing and "" or (args[#args] or "")
@@ -106,6 +110,9 @@ local function complete(_, cmd_line, _)
 
 	local sub = args[1]
 	if n == 2 then
+		if sub == "send" then
+			return prefix_filter(session_names(), cur)
+		end
 		return prefix_filter(SECOND_LEVEL[sub] or {}, cur)
 	end
 
@@ -116,7 +123,7 @@ local function complete(_, cmd_line, _)
 		elseif sub == "agent" then
 			if action == "add" or action == "copy" or action == "edit" or action == "delete" then
 				return prefix_filter(library_agent_names(), cur)
-			elseif action == "remove" or action == "restart" then
+			elseif action == "remove" or action == "restart" or action == "stop" or action == "push" or action == "reset" then
 				return prefix_filter(member_names(), cur)
 			end
 		elseif sub == "session" and action == "switch" then
@@ -124,6 +131,10 @@ local function complete(_, cmd_line, _)
 		elseif sub == "history" and action == "agent" then
 			return prefix_filter(session_names(), cur)
 		end
+	end
+
+	if n == 4 and sub == "agent" and action == "reset" then
+		return prefix_filter(require("nvim-agent.agent").AGENT_FILES, cur)
 	end
 
 	return {}
@@ -144,13 +155,29 @@ local function dispatch(opts)
 	local sub, action = args[1], args[2]
 
 	if sub == "open" then
-		agent.open()
+		if action == "all" then
+			agent.open_all()
+		else
+			agent.open()
+		end
 	elseif sub == "close" then
-		agent.close()
+		if action == "all" then
+			agent.close_all()
+		else
+			agent.close()
+		end
 	elseif sub == "toggle" then
 		agent.toggle()
 	elseif sub == "refresh" then
 		agent.refresh_context()
+	elseif sub == "status" then
+		agent.team_status()
+	elseif sub == "send" then
+		if not action then
+			agent.send_message()
+		else
+			agent.send_message(action, table.concat(args, " ", 3))
+		end
 	elseif sub == "setup" then
 		agent.adapter_setup()
 	elseif sub == "workspace" then
@@ -176,6 +203,8 @@ local function dispatch(opts)
 			agent.agent_add(args[3], args[4])
 		elseif action == "remove" then
 			agent.agent_remove(args[3])
+		elseif action == "stop" then
+			agent.agent_stop(args[3])
 		elseif action == "restart" then
 			agent.agent_restart(args[3])
 		elseif action == "define" then
@@ -186,10 +215,16 @@ local function dispatch(opts)
 			agent.agent_edit(args[3])
 		elseif action == "delete" then
 			agent.agent_delete(args[3])
-		elseif action == "save" then
-			agent.agent_save()
+		elseif action == "push" or action == "save" then
+			agent.agent_push(args[3])
+		elseif action == "overrides" then
+			agent.agent_overrides()
+		elseif action == "reset" then
+			agent.agent_reset(args[3], args[4])
 		else
-			usage("agent what? (add [agent] [as-name]|remove [name]|restart [name]|define|copy [src] [dst]|edit [name]|delete [name]|list|save)")
+			usage(
+				"agent what? (add [agent] [as-name]|remove [name]|stop [name]|restart [name]|define|copy [src] [dst]|edit [name]|delete [name]|list|push [name]|overrides|reset [name] [file])"
+			)
 		end
 	elseif sub == "session" then
 		if not action or action == "list" then
@@ -197,7 +232,7 @@ local function dispatch(opts)
 		elseif action == "switch" then
 			agent.session_switch(args[3])
 		else
-			usage("session what? (list|switch [name])")
+			usage("session what? (list|switch [name|n])")
 		end
 	elseif sub == "edit" then
 		if action == "prompt" then

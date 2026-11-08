@@ -1,20 +1,13 @@
 local M = {}
 
---- Write a session's active_dir back into its global agent definition. The
---- active_dir is a mirror of the agent, so any edit made there (notes,
---- pinned dirs, prompt, role) is the agent's new definition.
+--- Persist one edited context file of a live session as a workspace
+--- override for that member. The global agent is never written here; use
+--- :NvimAgent agent push for that.
 --- @param sess table
+--- @param file string   one of agent.AGENT_FILES
 --- @param silent boolean|nil
-function M.sync_session_to_agent(sess, silent)
-	if not sess or not sess.agent then
-		return
-	end
-	local ok, err = require("nvim-agent.agent").save(sess.agent, sess.active_dir)
-	if not ok then
-		vim.notify("nvim-agent: could not sync to agent '" .. sess.agent .. "': " .. tostring(err), vim.log.levels.WARN)
-	elseif not silent then
-		vim.notify("nvim-agent: context saved to agent '" .. sess.agent .. "'", vim.log.levels.INFO)
-	end
+function M.sync_session_file(sess, file, silent)
+	return require("nvim-agent.launcher").sync_session_file(sess, file, silent)
 end
 
 function M.register()
@@ -88,8 +81,8 @@ function M.register()
 		desc = "nvim-agent: warn on quit with running agents",
 	})
 
-	-- On exit: final sync of every session back to its agent, then stop jobs,
-	-- drop status files and timers.
+	-- On exit: stop jobs, drop status files and timers. Nothing to persist —
+	-- every edit was written to its workspace override when it happened.
 	vim.api.nvim_create_autocmd("VimLeavePre", {
 		group = group,
 		callback = function()
@@ -105,17 +98,16 @@ function M.register()
 			local ok, session_mod = pcall(require, "nvim-agent.session")
 			if ok then
 				for _, sess in ipairs(session_mod.list()) do
-					pcall(M.sync_session_to_agent, sess, true)
 					pcall(session_mod.remove_status, sess)
 					require("nvim-agent.terminal").cleanup(sess.id)
 				end
 			end
 		end,
-		desc = "nvim-agent: sync agents and clean up terminals on exit",
+		desc = "nvim-agent: clean up terminals on exit",
 	})
 
-	-- A session's active/ dir mirrors its agent definition: saving any file
-	-- in it writes the agent. Covers :NvimAgent edit prompt|notes|dirs|role.
+	-- Saving any file in a session's active/ dir records it as a workspace
+	-- override for that member. Covers :NvimAgent edit prompt|notes|dirs|role.
 	vim.api.nvim_create_autocmd("BufWritePost", {
 		group = group,
 		pattern = config.get().base_dir .. "/sessions/*/*/active/*",
@@ -123,10 +115,10 @@ function M.register()
 			local active_dir = vim.fn.fnamemodify(ev.file, ":h")
 			local sess = require("nvim-agent.session").get_by_active_dir(active_dir)
 			if sess then
-				M.sync_session_to_agent(sess)
+				M.sync_session_file(sess, vim.fn.fnamemodify(ev.file, ":t"))
 			end
 		end,
-		desc = "nvim-agent: sync edited context file to its agent",
+		desc = "nvim-agent: save edited context file as a workspace override",
 	})
 
 	-- Continuation timer: every 30 s, check each agent terminal.

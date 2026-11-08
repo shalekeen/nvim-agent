@@ -77,6 +77,42 @@ local function scroll_to_bottom(bufnr, winnr, delay_ms)
 	end, delay_ms or 5000)
 end
 
+--- Build an N-cell grid of windows (rows × cols) in a fresh tab and return
+--- the windows in row-major order. Surplus cells are closed.
+--- @param n integer
+--- @param cols integer
+--- @return integer[] wins
+local function build_grid(n, cols)
+	local rows = math.ceil(n / cols)
+	vim.cmd("tabnew")
+	local row_wins = { vim.api.nvim_get_current_win() }
+	for r = 2, rows do
+		vim.api.nvim_set_current_win(row_wins[r - 1])
+		vim.cmd("belowright split")
+		row_wins[r] = vim.api.nvim_get_current_win()
+	end
+	local wins = {}
+	for r = 1, rows do
+		local row = { row_wins[r] }
+		for c = 2, cols do
+			vim.api.nvim_set_current_win(row[c - 1])
+			vim.cmd("belowright vsplit")
+			row[c] = vim.api.nvim_get_current_win()
+		end
+		for c = 1, cols do
+			table.insert(wins, row[c])
+		end
+	end
+	vim.cmd("wincmd =")
+	for i = #wins, n + 1, -1 do
+		if vim.api.nvim_win_is_valid(wins[i]) then
+			vim.api.nvim_win_close(wins[i], true)
+		end
+		wins[i] = nil
+	end
+	return wins
+end
+
 --- Spawn the adapter CLI for `sess` inside the given window. Creates the
 --- terminal buffer, names it, pins it in barbar, runs adapter buffer-keymap
 --- setup, and scrolls to bottom. Used by M.open (single session, and
@@ -108,12 +144,24 @@ local function launch_session_in_window(sess, win, adapter)
 		},
 		on_exit = function(_, code, _)
 			vim.schedule(function()
+				-- Stale callback guard: if this session was closed (and perhaps
+				-- recreated under the same name, hence the same id) before the
+				-- old job's exit arrived, do nothing — otherwise we would mark
+				-- the NEW session exited and strip its status file.
+				local sm = require("nvim-agent.session")
+				if sm.get(sess.id) ~= sess then
+					return
+				end
 				-- The CLI ended on its own (user typed /exit, crash, ...).
 				-- The session stays a workspace member but is marked exited
 				-- and its status file is removed so peers stop delegating to
 				-- it. It can be relaunched with :NvimAgent agent restart or
 				-- by a peer calling spawn_agent with the same name.
-				require("nvim-agent.session").mark_exited(sess.id, code)
+				sm.mark_exited(sess.id, code)
+				if sess.stop_requested then
+					sess.stop_requested = nil
+					return
+				end
 				local level = code == 0 and vim.log.levels.INFO or vim.log.levels.WARN
 				vim.notify(
 					string.format(
@@ -217,47 +265,79 @@ function M.open_grid(session_ids, cols)
 		return
 	end
 
-	local rows = math.ceil(#sessions / cols)
-
-	vim.cmd("tabnew")
-	local first_win = vim.api.nvim_get_current_win()
-
-	local row_wins = { first_win }
-	for r = 2, rows do
-		vim.api.nvim_set_current_win(row_wins[r - 1])
-		vim.cmd("belowright split")
-		row_wins[r] = vim.api.nvim_get_current_win()
-	end
-
-	local grid_wins = {}
-	for r = 1, rows do
-		grid_wins[r] = { row_wins[r] }
-		for c = 2, cols do
-			vim.api.nvim_set_current_win(grid_wins[r][c - 1])
-			vim.cmd("belowright vsplit")
-			grid_wins[r][c] = vim.api.nvim_get_current_win()
-		end
-	end
-
-	vim.cmd("wincmd =")
-
-	local idx = 0
-	for r = 1, rows do
-		for c = 1, cols do
-			idx = idx + 1
-			if idx > #sessions then
-				if grid_wins[r] and grid_wins[r][c] and vim.api.nvim_win_is_valid(grid_wins[r][c]) then
-					vim.api.nvim_win_close(grid_wins[r][c], true)
-				end
-			else
-				launch_session_in_window(sessions[idx], grid_wins[r][c], adapter)
-			end
-		end
+	local wins = build_grid(#sessions, cols)
+	for i, sess in ipairs(sessions) do
+		launch_session_in_window(sess, wins[i], adapter)
 	end
 
 	if sessions[1] and sessions[1].winnr and vim.api.nvim_win_is_valid(sessions[1].winnr) then
 		vim.api.nvim_set_current_win(sessions[1].winnr)
 	end
+end
+
+--- Arrange every RUNNING session's existing terminal buffer in a grid in a
+--- fresh tab. Unlike open_grid this launches nothing; exited members are
+--- skipped (relaunch them with restart).
+--- @param cols number|nil
+--- @return integer  number of sessions shown
+function M.show_all(cols)
+	local session_mod = require("nvim-agent.session")
+	local shown = {}
+	for _, sess in ipairs(session_mod.list()) do
+		if session_mod.is_running(sess) and is_buf_valid(sess) then
+			table.insert(shown, sess)
+		end
+	end
+	if #shown == 0 then
+		vim.notify("nvim-agent: no running agents to show", vim.log.levels.INFO)
+		return 0
+	end
+	local wins = build_grid(#shown, cols or 4)
+	for i, sess in ipairs(shown) do
+		vim.api.nvim_win_set_buf(wins[i], sess.bufnr)
+		sess.winnr = wins[i]
+	end
+	vim.api.nvim_set_current_win(wins[1])
+	return #shown
+end
+
+--- Hide every window currently showing an agent terminal. Processes keep
+--- running. A tab that held only agent windows is closed.
+--- @return integer  number of windows hidden
+function M.hide_all()
+	local session_mod = require("nvim-agent.session")
+	local hidden = 0
+	for _, sess in ipairs(session_mod.list()) do
+		if is_win_valid(sess) then
+			local win = sess.winnr
+			sess.winnr = nil
+			if not pcall(vim.api.nvim_win_close, win, true) then
+				-- Last window in its tab: close the tab if there is another one.
+				if #vim.api.nvim_list_tabpages() > 1 then
+					local tab = vim.api.nvim_win_get_tabpage(win)
+					pcall(vim.api.nvim_set_current_tabpage, tab)
+					pcall(vim.cmd, "tabclose")
+				else
+					-- Only window in the only tab: swap in an empty buffer instead.
+					local scratch = vim.api.nvim_create_buf(true, false)
+					vim.api.nvim_win_set_buf(win, scratch)
+				end
+			end
+			hidden = hidden + 1
+		end
+	end
+	return hidden
+end
+
+--- Stop a session's CLI process. The on_exit handler marks it exited; the
+--- usual "agent exited" warning is suppressed because the user asked.
+function M.stop(session_id)
+	local sess = get_session(session_id)
+	if not sess or not sess.jobid then
+		return
+	end
+	sess.stop_requested = true
+	vim.fn.jobstop(sess.jobid)
 end
 
 --- Hide a session's window. The process keeps running.

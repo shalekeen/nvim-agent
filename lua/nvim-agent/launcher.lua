@@ -113,10 +113,11 @@ end
 -- Sessions for manifest entries
 ------------------------------------------------------------------------
 
---- Create the session for a manifest entry and mirror its agent into
---- active_dir. Does not open a terminal.
+--- Create the session for a manifest entry: mirror the global agent into
+--- active_dir, then lay this workspace's override files on top. Does not
+--- open a terminal.
 --- @return table|nil sess
-local function create_session_for_entry(entry, cwd)
+local function create_session_for_entry(manifest, entry, cwd)
 	local sess, err = session_mod().create(entry.name, entry.agent)
 	if not sess then
 		notify("failed to create session '" .. entry.name .. "': " .. (err or "?"), vim.log.levels.ERROR)
@@ -126,14 +127,24 @@ local function create_session_for_entry(entry, cwd)
 	if not ok then
 		notify("'" .. entry.name .. "': " .. (lerr or "agent load failed") .. " — launching with defaults", vim.log.levels.WARN)
 	end
+	local applied = workspace_mod().apply_overrides(manifest.name, entry.name, sess.active_dir, cwd)
+	if #applied > 0 then
+		sess.overrides = applied
+	end
 	write_initial_status(sess, cwd, "launching")
 	return sess
+end
+
+--- Reload a session's active_dir from its agent + this workspace's
+--- overrides. Used after overrides are cleared. Returns the files applied.
+local function reload_session_files(manifest, sess, cwd)
+	agent_mod().load(sess.agent, sess.active_dir)
+	return workspace_mod().apply_overrides(manifest.name, sess.name, sess.active_dir, cwd)
 end
 
 local function close_all_sessions()
 	local sm = session_mod()
 	for _, sess in ipairs(sm.list()) do
-		pcall(require("nvim-agent.autocmds").sync_session_to_agent, sess, true)
 		sm.close(sess.id)
 	end
 end
@@ -163,7 +174,7 @@ function M.launch(manifest, cwd)
 	local created = {}
 	for _, entry in ipairs(manifest.agents or {}) do
 		if not sm.get_by_name(entry.name) then
-			local sess = create_session_for_entry(entry, cwd)
+			local sess = create_session_for_entry(manifest, entry, cwd)
 			if sess then
 				table.insert(created, sess)
 			end
@@ -721,7 +732,7 @@ function M.add_agent(agent_name, session_name, cwd)
 			return notify(err, vim.log.levels.ERROR)
 		end
 		local entry = ws.find_entry(m, sname)
-		local sess = create_session_for_entry(entry, cwd)
+		local sess = create_session_for_entry(m, entry, cwd)
 		if sess then
 			vim.defer_fn(function()
 				terminal().open(sess.id)
@@ -834,7 +845,7 @@ function M.restart_agent(name, cwd)
 			return notify("agent '" .. n .. "' is already running")
 		end
 		if not sess then
-			sess = create_session_for_entry(entry, cwd)
+			sess = create_session_for_entry(m, entry, cwd)
 			if not sess then
 				return
 			end
@@ -1005,6 +1016,267 @@ function M.list_agents_ui()
 end
 
 ------------------------------------------------------------------------
+-- Overrides: edits from a live session go to this workspace, not global
+------------------------------------------------------------------------
+
+--- Write one file of a session's active_dir to this workspace's override
+--- for that member. Called whenever a context file is edited from a live
+--- session (BufWritePost on active/*, the notes/dirs/prompt commands and
+--- keymaps). The first write creates the override with the session's
+--- current content, which is exactly "initialise from the global, then
+--- edit".
+--- @param sess table
+--- @param file string   one of agent.AGENT_FILES
+--- @param silent boolean|nil
+--- @return boolean
+function M.sync_session_file(sess, file, silent)
+	local m = workspace_mod().get_current()
+	if not sess or not m then
+		return false
+	end
+	local ok, err = workspace_mod().copy_override_from(m.name, sess.name, file, sess.active_dir .. "/" .. file, vim.fn.getcwd())
+	if not ok then
+		notify("could not save override for '" .. sess.name .. "': " .. tostring(err), vim.log.levels.WARN)
+		return false
+	end
+	sess.overrides = workspace_mod().list_overrides(m.name, sess.name, vim.fn.getcwd())
+	if not silent then
+		notify(string.format("%s saved as a '%s' override for '%s' (global agent '%s' untouched)", file, m.name, sess.name, sess.agent))
+	end
+	return true
+end
+
+--- Push a session's current files to its GLOBAL agent definition, then
+--- drop this workspace's overrides for it (they would be identical).
+--- @param name string|nil  session name; nil → picker
+function M.push_agent(name, cwd)
+	cwd = cwd or vim.fn.getcwd()
+	local m = require_live_workspace()
+	if not m then
+		return
+	end
+	local function do_push(sess)
+		local ok, err = agent_mod().save(sess.agent, sess.active_dir)
+		if not ok then
+			return notify(err, vim.log.levels.ERROR)
+		end
+		workspace_mod().clear_overrides(m.name, sess.name, nil, cwd)
+		sess.overrides = nil
+		notify(string.format("'%s' pushed to global agent '%s'; workspace overrides cleared", sess.name, sess.agent))
+	end
+	if name and name ~= "" then
+		local sess = session_mod().get_by_name(name)
+		if not sess then
+			return notify("no session '" .. name .. "'", vim.log.levels.ERROR)
+		end
+		return do_push(sess)
+	end
+	M.pick_session("Push session context to its global agent", function(sess)
+		if sess then
+			do_push(sess)
+		end
+	end)
+end
+
+--- Drop one or all overrides for a member and reload the affected files
+--- from the global agent into the live session.
+--- @param name string|nil  session name; nil → picker
+--- @param file string|nil  one file, or nil for all
+function M.reset_overrides(name, file, cwd)
+	cwd = cwd or vim.fn.getcwd()
+	local m = require_live_workspace()
+	if not m then
+		return
+	end
+	local ws = workspace_mod()
+	local function do_reset(sess)
+		local had = ws.list_overrides(m.name, sess.name, cwd)
+		if #had == 0 then
+			return notify("'" .. sess.name .. "' has no overrides in '" .. m.name .. "'")
+		end
+		ws.clear_overrides(m.name, sess.name, file, cwd)
+		reload_session_files(m, sess, cwd)
+		sess.overrides = ws.list_overrides(m.name, sess.name, cwd)
+		if #sess.overrides == 0 then
+			sess.overrides = nil
+		end
+		notify(string.format("'%s': %s reset to global agent '%s'", sess.name, file or "all overrides", sess.agent))
+	end
+	if name and name ~= "" then
+		local sess = session_mod().get_by_name(name)
+		if not sess then
+			return notify("no session '" .. name .. "'", vim.log.levels.ERROR)
+		end
+		return do_reset(sess)
+	end
+	M.pick_session("Reset overrides for session", function(sess)
+		if sess then
+			do_reset(sess)
+		end
+	end)
+end
+
+--- Show which files each member overrides in the live workspace.
+function M.show_overrides_ui(cwd)
+	cwd = cwd or vim.fn.getcwd()
+	local m = require_live_workspace()
+	if not m then
+		return
+	end
+	local lines = {}
+	for _, e in ipairs(m.agents or {}) do
+		local files = workspace_mod().list_overrides(m.name, e.name, cwd)
+		table.insert(lines, string.format("  %-16s %s", e.name, #files > 0 and table.concat(files, ", ") or "(none — using global '" .. e.agent .. "')"))
+	end
+	if #lines == 0 then
+		return notify("workspace has no agents")
+	end
+	notify("overrides in '" .. m.name .. "':\n" .. table.concat(lines, "\n"))
+end
+
+------------------------------------------------------------------------
+-- Liveness helpers
+------------------------------------------------------------------------
+
+--- Stop a member's CLI without removing it from the workspace. It becomes
+--- "exited" and can be relaunched with restart / spawn_agent.
+--- @param name string|nil
+function M.stop_agent(name)
+	local sm = session_mod()
+	local function do_stop(sess)
+		if not sm.is_running(sess) then
+			return notify("agent '" .. sess.name .. "' is not running")
+		end
+		terminal().stop(sess.id)
+		notify("agent '" .. sess.name .. "' stopped (still in the workspace; restart with :NvimAgent agent restart " .. sess.name .. ")")
+	end
+	if name and name ~= "" then
+		local sess = sm.get_by_name(name)
+		if not sess then
+			return notify("no session '" .. name .. "'", vim.log.levels.ERROR)
+		end
+		return do_stop(sess)
+	end
+	local running = {}
+	for _, sess in ipairs(sm.list()) do
+		if sm.is_running(sess) then
+			table.insert(running, sess)
+		end
+	end
+	if #running == 0 then
+		return notify("no running agents")
+	end
+	if #running == 1 then
+		return do_stop(running[1])
+	end
+	local options, map = {}, {}
+	for _, sess in ipairs(running) do
+		table.insert(options, sess.name)
+		map[sess.name] = sess
+	end
+	ui().select(options, { prompt = "Stop agent", width = 60 }, function(choice)
+		if choice then
+			do_stop(map[choice])
+		end
+	end)
+end
+
+--- Type a line into a member's terminal and submit it.
+--- @param name string|nil  session name; nil → picker
+--- @param text string|nil  nil → prompt
+function M.message_agent(name, text)
+	local sm = session_mod()
+	local function do_send(sess)
+		local function send(t)
+			if not t or t == "" then
+				return
+			end
+			if not sm.is_running(sess) then
+				return notify("agent '" .. sess.name .. "' is not running", vim.log.levels.WARN)
+			end
+			terminal().send(sess.id, t)
+			notify("sent to '" .. sess.name .. "'")
+		end
+		if text and text ~= "" then
+			return send(text)
+		end
+		ui().input({ prompt = "", title = "Message to '" .. sess.name .. "'", width = 90 }, send)
+	end
+	if name and name ~= "" then
+		local sess = sm.get_by_name(name)
+		if not sess then
+			return notify("no session '" .. name .. "'", vim.log.levels.ERROR)
+		end
+		return do_send(sess)
+	end
+	M.pick_session("Message which agent?", function(sess)
+		if sess then
+			do_send(sess)
+		end
+	end)
+end
+
+--- Jump to the nth session (creation order). Relaunches it if exited.
+--- @param n integer
+function M.jump_session(n)
+	local sessions = session_mod().list()
+	local sess = sessions[n]
+	if not sess then
+		return notify("no session #" .. tostring(n))
+	end
+	terminal().open(sess.id)
+end
+
+--- Floating overview of the live workspace: every member's state, role,
+--- current task from its status file, pending mailbox size, and overrides.
+function M.team_status(cwd)
+	cwd = cwd or vim.fn.getcwd()
+	local m = workspace_mod().get_current()
+	if not m then
+		return notify("no live workspace", vim.log.levels.WARN)
+	end
+	local sm = session_mod()
+	local inst = workspace_mod().instance_runtime_dir(cwd)
+	local lines = { string.format("Workspace: %s    (instance %s)", m.name, sm.instance_id:sub(1, 8)), "" }
+	for _, e in ipairs(m.agents or {}) do
+		local sess = sm.get_by_name(e.name)
+		local state = "not launched"
+		if sess and sm.is_running(sess) then
+			state = "running"
+		elseif sess then
+			state = "exited"
+		end
+		local task, updated = nil, nil
+		local raw = read_file(inst .. "/status/" .. e.name .. ".json")
+		if raw then
+			local ok, data = pcall(vim.json.decode, raw)
+			if ok and type(data) == "table" then
+				task, updated = data.current_task, data.updated_at
+			end
+		end
+		local mail = vim.fn.getfsize(inst .. "/messages/" .. e.name .. ".md")
+		local overrides = workspace_mod().list_overrides(m.name, e.name, cwd)
+		local marker = (sess and sess.id == sm.current_id) and "*" or " "
+		table.insert(lines, string.format("%s %-16s %-12s agent: %s", marker, e.name, state, e.agent))
+		table.insert(lines, "    role:  " .. trunc(agent_mod().read_role(e.agent) or (sess and read_file(sess.active_dir .. "/role.md")) or "(none)", 100))
+		if task then
+			table.insert(lines, "    task:  " .. trunc(task, 100) .. (updated and ("   (" .. updated .. ")") or ""))
+		end
+		if mail and mail > 0 then
+			table.insert(lines, string.format("    mail:  %d bytes pending", mail))
+		end
+		if #overrides > 0 then
+			table.insert(lines, "    overrides: " .. table.concat(overrides, ", "))
+		end
+		table.insert(lines, "")
+	end
+	if #(m.agents or {}) == 0 then
+		table.insert(lines, "  (no agents — :NvimAgent agent add)")
+	end
+	ui().view_readonly(lines, { title = "nvim-agent team", width = math.min(110, vim.o.columns - 4), height = math.min(#lines + 3, vim.o.lines - 4) })
+end
+
+------------------------------------------------------------------------
 -- Sessions
 ------------------------------------------------------------------------
 
@@ -1151,7 +1423,7 @@ function M.spawn(name, system_prompt, role, user_notes)
 		entry = ws.find_entry(m, name)
 	end
 
-	sess = create_session_for_entry(entry, cwd)
+	sess = create_session_for_entry(m, entry, cwd)
 	if not sess then
 		return { success = false, error = "failed to create session for '" .. name .. "'" }
 	end

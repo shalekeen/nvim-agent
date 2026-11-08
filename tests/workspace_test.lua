@@ -153,6 +153,66 @@ local old = workspace.read("old-shape", cwd)
 check("read normalises entry.agent = entry.name", old and old.agents[1].agent == "Alice")
 
 -- ---------------------------------------------------------------------------
+-- 3b. Per-workspace overrides: workspaces/<ws>/<session>/<file>
+-- ---------------------------------------------------------------------------
+
+local ov_ws = "feature-dev"
+assert_eq(
+	"override_dir = workspaces/<ws>/<session>",
+	workspace.override_dir(ov_ws, "Alice", cwd),
+	cwd .. "/.nvim-agent/workspaces/feature-dev/Alice"
+)
+assert_eq("no overrides initially", #workspace.list_overrides(ov_ws, "Alice", cwd), 0)
+check("write_override rejects a non-agent file", workspace.write_override(ov_ws, "Alice", "evil.sh", "x", cwd) == false)
+
+-- Copy-on-first-edit: the override starts as the session's current content.
+local fake_active = sandbox .. "/fake-active"
+write(fake_active .. "/user_notes.md", "global notes + my project note\n")
+assert_eq("copy_override_from", workspace.copy_override_from(ov_ws, "Alice", "user_notes.md", fake_active .. "/user_notes.md", cwd), true)
+assert_eq("override file written", read(workspace.override_path(ov_ws, "Alice", "user_notes.md", cwd)), "global notes + my project note\n")
+assert_eq("write_override", workspace.write_override(ov_ws, "Alice", "role.md", "project role\n", cwd), true)
+local listed_ov = workspace.list_overrides(ov_ws, "Alice", cwd)
+check("list_overrides in AGENT_FILES order", #listed_ov == 2 and listed_ov[1] == "role.md" and listed_ov[2] == "user_notes.md", table.concat(listed_ov, ","))
+
+-- apply_overrides lays overrides over a dir holding the global files.
+local target = sandbox .. "/apply-target"
+write(target .. "/role.md", "GLOBAL ROLE\n")
+write(target .. "/user_notes.md", "GLOBAL NOTES\n")
+write(target .. "/system_prompt.md", "GLOBAL PROMPT")
+local applied = workspace.apply_overrides(ov_ws, "Alice", target, cwd)
+check("apply_overrides returns the applied files", #applied == 2)
+assert_eq("overridden role wins", read(target .. "/role.md"), "project role\n")
+assert_eq("overridden notes win", read(target .. "/user_notes.md"), "global notes + my project note\n")
+assert_eq("non-overridden file untouched", read(target .. "/system_prompt.md"), "GLOBAL PROMPT")
+
+-- Overrides are keyed by SESSION name: a second copy of the agent has its own.
+assert_eq("other member has no overrides", #workspace.list_overrides(ov_ws, "Bob", cwd), 0)
+
+-- clear one → the other remains; clear all → dir gone.
+workspace.clear_overrides(ov_ws, "Alice", "role.md", cwd)
+local after_one = workspace.list_overrides(ov_ws, "Alice", cwd)
+check("clear one override leaves the rest", #after_one == 1 and after_one[1] == "user_notes.md")
+workspace.clear_overrides(ov_ws, "Alice", nil, cwd)
+check("clear all removes the override dir", vim.fn.isdirectory(workspace.override_dir(ov_ws, "Alice", cwd)) == 0)
+check("clearing the last single override removes the dir too", (function()
+	workspace.write_override(ov_ws, "Alice", "role.md", "r\n", cwd)
+	workspace.clear_overrides(ov_ws, "Alice", "role.md", cwd)
+	return vim.fn.isdirectory(workspace.override_dir(ov_ws, "Alice", cwd)) == 0
+end)())
+
+-- remove_entry deletes the member's overrides.
+workspace.write_override(ov_ws, "Bob", "user_notes.md", "bob notes\n", cwd)
+check("setup: Bob has an override", #workspace.list_overrides(ov_ws, "Bob", cwd) == 1)
+workspace.remove_entry(named, "Bob", cwd)
+check("remove_entry deletes the member's overrides", vim.fn.isdirectory(workspace.override_dir(ov_ws, "Bob", cwd)) == 0)
+workspace.add_entry(named, { agent = "Bob" }, cwd)
+
+-- The ephemeral workspace supports overrides exactly like a named one.
+workspace.write_override(workspace.EPHEMERAL, "Bob", "persistent_dirs.json", '[{"tag":"x","path":"/x"}]', cwd)
+check("ephemeral workspace holds overrides", read(cwd .. "/.nvim-agent/workspaces/ephemeral/Bob/persistent_dirs.json") ~= nil)
+check("ephemeral overrides listed", #workspace.list_overrides(workspace.EPHEMERAL, "Bob", cwd) == 1)
+
+-- ---------------------------------------------------------------------------
 -- 4. Current workspace, rename (promote ephemeral), delete
 -- ---------------------------------------------------------------------------
 
@@ -164,6 +224,7 @@ check("rename to existing fails", workspace.rename("ephemeral", "feature-dev", c
 check("rename to reserved fails", workspace.rename("feature-dev", "ephemeral", cwd) == false)
 assert_eq("promote ephemeral → 'sprint-1'", workspace.rename("ephemeral", "sprint-1", cwd), true)
 check("old dir gone", vim.fn.isdirectory(cwd .. "/.nvim-agent/workspaces/ephemeral") == 0)
+check("overrides travel with the renamed workspace", #workspace.list_overrides("sprint-1", "Bob", cwd) == 1)
 local promoted = workspace.read("sprint-1", cwd)
 check("promoted manifest keeps members and has new name", promoted and promoted.name == "sprint-1" and #promoted.agents == 1)
 assert_eq("current manifest renamed in place", workspace.get_current().name, "sprint-1")

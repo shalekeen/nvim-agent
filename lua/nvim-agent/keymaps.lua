@@ -1,5 +1,8 @@
 local M = {}
 
+--- Send the visual selection to an agent, prefixed with where it came from
+--- (path:first-last) so the agent can find it. Picks the session when more
+--- than one is live.
 function M.send_selection()
 	local s = vim.fn.getpos("'<")
 	local e = vim.fn.getpos("'>")
@@ -21,11 +24,22 @@ function M.send_selection()
 		lines[1] = string.sub(lines[1], s[3])
 		lines[#lines] = string.sub(lines[#lines], 1, e[3])
 	end
-	local text = table.concat(lines, "\n")
-	local terminal = require("nvim-agent.terminal")
-	terminal.open()
-	vim.schedule(function()
-		vim.api.nvim_paste(text, true, -1)
+	local path = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ":.")
+	local header = ""
+	if path ~= "" then
+		header = string.format("From %s:%d-%d:\n", path, s[2], e[2])
+	end
+	local text = header .. table.concat(lines, "\n")
+
+	require("nvim-agent").pick_session("Send selection to which agent?", function(sess)
+		if not sess then
+			return vim.notify("nvim-agent: no live agents", vim.log.levels.WARN)
+		end
+		local terminal = require("nvim-agent.terminal")
+		terminal.open(sess.id)
+		vim.schedule(function()
+			vim.api.nvim_paste(text, true, -1)
+		end)
 	end)
 end
 
@@ -62,15 +76,14 @@ local function context_grid_paths(sess)
 end
 
 function M.view_all_context()
-	local ok, session_mod = pcall(require, "nvim-agent.session")
-	local sess = ok and session_mod.get_current() or nil
-	local files = context_grid_paths(sess)
-	if not files then
-		vim.notify("nvim-agent: no active session", vim.log.levels.WARN)
-		return
-	end
-	open_2x2_grid(files)
-	vim.notify("Viewing all context files (read-only)", vim.log.levels.INFO)
+	require("nvim-agent").pick_session("View context for which agent?", function(sess)
+		local files = context_grid_paths(sess)
+		if not files then
+			return vim.notify("nvim-agent: no active session", vim.log.levels.WARN)
+		end
+		open_2x2_grid(files)
+		vim.notify("Viewing context for '" .. sess.name .. "' (read-only)", vim.log.levels.INFO)
+	end)
 end
 
 function M.register()
@@ -80,25 +93,38 @@ function M.register()
 	end
 	local agent = require("nvim-agent")
 	local ui = require("nvim-agent.ui")
+	local cfg = require("nvim-agent.config").get()
 
-	--- Run `fn(active_dir)` for a picked session, then sync it to its agent.
+	--- Run `fn(active_dir)` for a picked session. Every context-editing
+	--- binding goes through this so the user always chooses the agent when
+	--- more than one is live.
 	local function with_session(prompt, fn)
 		agent.pick_session(prompt, function(sess)
 			if not sess or not sess.active_dir then
 				return vim.notify("nvim-agent: no active session", vim.log.levels.WARN)
 			end
-			fn(sess.active_dir)
+			fn(sess.active_dir, sess)
 		end)
 	end
 
-	wk.add({
+	local specs = {
 		{ "<leader>a", group = "Nvim-Agent", mode = "v" },
 		{ "<leader>a", group = "Nvim-Agent" },
 
+		-- ── Terminal / navigation ─────────────────────────────────────────
+		{ "<leader>ao", agent.open, desc = "Open agent terminal (or startup picker)" },
 		{ "<leader>aT", agent.toggle, desc = "Toggle agent terminal" },
-		{ "<leader>aQ", agent.graceful_quit, desc = "Graceful quit (sync + confirm)" },
+		{ "<leader>al", function() agent.session_switch() end, desc = "Switch agent (picker)" },
+		{ "<leader>aL", agent.session_list, desc = "List sessions" },
+		{ "<leader>aG", agent.open_all, desc = "Show all running agents in a grid" },
+		{ "<leader>aH", agent.close_all, desc = "Hide all agent windows" },
+		{ "<leader>ap", agent.team_status, desc = "Team status (who is doing what)" },
+		{ "<leader>am", function() agent.send_message() end, desc = "Message an agent" },
 		{ "<leader>ar", agent.refresh_context, desc = "Refresh context" },
-		{ "<leader>av", M.view_all_context, desc = "View all context (prompt, notes, dirs, ephemeral)" },
+		{ "<leader>aQ", agent.graceful_quit, desc = "Graceful quit (confirm)" },
+
+		-- ── Context views ─────────────────────────────────────────────────
+		{ "<leader>av", M.view_all_context, desc = "View agent context (prompt, notes, dirs, ephemeral)" },
 		{
 			"<leader>ae",
 			function()
@@ -110,7 +136,7 @@ function M.register()
 			end,
 			desc = "View ephemeral context",
 		},
-		{ "<leader>aR", function() with_session("Edit role for session", agent.edit_role) end, desc = "Edit live session role" },
+		{ "<leader>aR", function() with_session("Edit role for agent", agent.edit_role) end, desc = "Edit agent role (this workspace)" },
 
 		-- ── Workspaces ────────────────────────────────────────────────────
 		{ "<leader>aw", group = "Workspace" },
@@ -121,22 +147,20 @@ function M.register()
 		{ "<leader>awR", function() agent.workspace_rename() end, desc = "Rename workspace" },
 		{ "<leader>aws", function() agent.workspace_save_as() end, desc = "Save live workspace as (promote ephemeral)" },
 
-		-- ── Agents: membership + global library ────────────────────────────
+		-- ── Agents: membership, liveness, overrides, global library ───────
 		{ "<leader>aa", group = "Agents" },
 		{ "<leader>aaa", function() agent.agent_add() end, desc = "Add agent to workspace" },
 		{ "<leader>aar", function() agent.agent_remove() end, desc = "Remove agent from workspace" },
-		{ "<leader>aaR", function() agent.agent_restart() end, desc = "Relaunch exited agent" },
+		{ "<leader>aas", function() agent.agent_stop() end, desc = "Stop agent (stays in workspace)" },
+		{ "<leader>aaR", function() agent.agent_restart() end, desc = "Restart exited agent" },
 		{ "<leader>aad", agent.agent_define, desc = "Define new agent (global)" },
 		{ "<leader>aac", function() agent.agent_copy() end, desc = "Copy agent (global)" },
-		{ "<leader>aae", function() agent.agent_edit() end, desc = "Edit agent definition (global)" },
+		{ "<leader>aae", function() agent.agent_edit() end, desc = "Edit global agent definition" },
 		{ "<leader>aax", function() agent.agent_delete() end, desc = "Delete agent (global)" },
 		{ "<leader>aal", agent.agent_list, desc = "List agents" },
-		{ "<leader>aas", agent.agent_save, desc = "Save session context → agent" },
-
-		-- ── Sessions ──────────────────────────────────────────────────────
-		{ "<leader>aS", group = "Sessions" },
-		{ "<leader>aSl", agent.session_list, desc = "List sessions" },
-		{ "<leader>aSs", function() agent.session_switch() end, desc = "Switch session" },
+		{ "<leader>aap", function() agent.agent_push() end, desc = "Push workspace edits to global agent" },
+		{ "<leader>aao", agent.agent_overrides, desc = "Show workspace overrides" },
+		{ "<leader>aaz", function() agent.agent_reset() end, desc = "Reset overrides to global agent" },
 
 		-- ── Tmux ──────────────────────────────────────────────────────────
 		{ "<leader>at", group = "Tmux Capture" },
@@ -144,12 +168,12 @@ function M.register()
 		{ "<leader>atc", function() agent.tmux_clear_captures() end, desc = "Clear all tmux captures" },
 		{ "<leader>atv", function() agent.tmux_view_captures() end, desc = "View tmux captures" },
 
-		-- ── Persistent dirs (session mirror → agent) ──────────────────────
+		-- ── Persistent dirs (saved as a workspace override) ───────────────
 		{ "<leader>ad", group = "Persistent Dirs" },
 		{
 			"<leader>ada",
 			function()
-				with_session("Add directory to session", function(active_dir)
+				with_session("Add directory for which agent?", function(active_dir)
 					ui.input({ prompt = "", title = "Add Directory (Tag)" }, function(tag)
 						if not tag or tag == "" then
 							return
@@ -170,13 +194,13 @@ function M.register()
 			end,
 			desc = "Add directory",
 		},
-		{ "<leader>ade", function() with_session("Edit persistent dirs for session", agent.edit_persistent_dirs) end, desc = "Edit persistent dirs" },
-		{ "<leader>adv", function() with_session("View persistent dirs for session", agent.view_persistent_dirs) end, desc = "View persistent dirs" },
+		{ "<leader>ade", function() with_session("Edit persistent dirs for which agent?", agent.edit_persistent_dirs) end, desc = "Edit persistent dirs" },
+		{ "<leader>adv", function() with_session("View persistent dirs for which agent?", agent.view_persistent_dirs) end, desc = "View persistent dirs" },
 		{
 			"<leader>add",
 			function()
-				with_session("Delete directory from session", function(active_dir)
-					local dirs_path = active_dir .. "/" .. require("nvim-agent.config").get().context_files.persistent_dirs
+				with_session("Delete directory for which agent?", function(active_dir)
+					local dirs_path = active_dir .. "/" .. cfg.context_files.persistent_dirs
 					local dirs = require("nvim-agent.context.persistent_dirs").load(dirs_path)
 					if #dirs == 0 then
 						return vim.notify("nvim-agent: no persistent dirs", vim.log.levels.INFO)
@@ -195,12 +219,12 @@ function M.register()
 			desc = "Delete directory",
 		},
 
-		-- ── Notes (session mirror → agent) ────────────────────────────────
+		-- ── Notes (saved as a workspace override) ─────────────────────────
 		{ "<leader>an", group = "Notes" },
 		{
 			"<leader>ana",
 			function()
-				with_session("Add note to session", function(active_dir)
+				with_session("Add note for which agent?", function(active_dir)
 					ui.input({ prompt = "", title = "Add Note (Tag)" }, function(tag)
 						if not tag or tag == "" then
 							return
@@ -209,13 +233,13 @@ function M.register()
 							if not content or content == "" then
 								return
 							end
-							local notes_file = active_dir .. "/user_notes.md"
+							local notes_file = active_dir .. "/" .. cfg.context_files.user_notes
 							local notes = vim.fn.filereadable(notes_file) == 1 and vim.fn.readfile(notes_file) or {}
 							table.insert(notes, "")
 							table.insert(notes, "## " .. tag)
 							table.insert(notes, content)
 							vim.fn.writefile(notes, notes_file)
-							agent.sync_session(active_dir)
+							agent.sync_session(active_dir, cfg.context_files.user_notes)
 							vim.notify("Added note: " .. tag, vim.log.levels.INFO)
 						end)
 					end)
@@ -223,13 +247,13 @@ function M.register()
 			end,
 			desc = "Add note",
 		},
-		{ "<leader>ane", function() with_session("Edit notes for session", agent.edit_user_notes) end, desc = "Edit notes" },
-		{ "<leader>anv", function() with_session("View notes for session", agent.view_user_notes) end, desc = "View notes" },
+		{ "<leader>ane", function() with_session("Edit notes for which agent?", agent.edit_user_notes) end, desc = "Edit notes" },
+		{ "<leader>anv", function() with_session("View notes for which agent?", agent.view_user_notes) end, desc = "View notes" },
 		{
 			"<leader>and",
 			function()
-				with_session("Delete note from session", function(active_dir)
-					local notes_file = active_dir .. "/user_notes.md"
+				with_session("Delete note for which agent?", function(active_dir)
+					local notes_file = active_dir .. "/" .. cfg.context_files.user_notes
 					if vim.fn.filereadable(notes_file) == 0 then
 						return vim.notify("No user notes found", vim.log.levels.INFO)
 					end
@@ -268,7 +292,7 @@ function M.register()
 							table.remove(new_lines)
 						end
 						vim.fn.writefile(new_lines, notes_file)
-						agent.sync_session(active_dir)
+						agent.sync_session(active_dir, cfg.context_files.user_notes)
 						vim.notify("Deleted note: " .. choice, vim.log.levels.INFO)
 					end)
 				end)
@@ -276,39 +300,39 @@ function M.register()
 			desc = "Delete note by tag",
 		},
 
-		-- ── System prompt (session mirror → agent) ────────────────────────
+		-- ── System prompt (saved as a workspace override) ─────────────────
 		{ "<leader>as", group = "System Prompt" },
 		{
 			"<leader>asa",
 			function()
-				with_session("Add to system prompt for session", function(active_dir)
+				with_session("Add to system prompt for which agent?", function(active_dir)
 					ui.input({ prompt = "", title = "Add to System Prompt (Content)" }, function(content)
 						if not content or content == "" then
 							return
 						end
-						local prompt_file = active_dir .. "/system_prompt.md"
+						local prompt_file = active_dir .. "/" .. cfg.context_files.system_prompt
 						local prompt = vim.fn.filereadable(prompt_file) == 1 and vim.fn.readfile(prompt_file) or {}
 						table.insert(prompt, "")
 						table.insert(prompt, content)
 						vim.fn.writefile(prompt, prompt_file)
-						agent.sync_session(active_dir)
+						agent.sync_session(active_dir, cfg.context_files.system_prompt)
 						vim.notify("System prompt added", vim.log.levels.INFO)
 					end)
 				end)
 			end,
 			desc = "Add to system prompt",
 		},
-		{ "<leader>ase", function() with_session("Edit system prompt for session", agent.edit_system_prompt) end, desc = "Edit system prompt" },
-		{ "<leader>asv", function() with_session("View system prompt for session", agent.view_system_prompt) end, desc = "View system prompt" },
+		{ "<leader>ase", function() with_session("Edit system prompt for which agent?", agent.edit_system_prompt) end, desc = "Edit system prompt" },
+		{ "<leader>asv", function() with_session("View system prompt for which agent?", agent.view_system_prompt) end, desc = "View system prompt" },
 		{
 			"<leader>asd",
 			function()
-				with_session("Reset system prompt for session", function(active_dir)
+				with_session("Reset system prompt for which agent?", function(active_dir)
 					ui.select({ "Yes", "No" }, { prompt = "Reset system prompt to the default?", width = 50 }, function(choice)
 						if choice == "Yes" then
-							local default = require("nvim-agent.config").get().default_system_prompt or ""
-							vim.fn.writefile(vim.split(default, "\n", { plain = true }), active_dir .. "/system_prompt.md")
-							agent.sync_session(active_dir)
+							local default = cfg.default_system_prompt or ""
+							vim.fn.writefile(vim.split(default, "\n", { plain = true }), active_dir .. "/" .. cfg.context_files.system_prompt)
+							agent.sync_session(active_dir, cfg.context_files.system_prompt)
 							vim.notify("System prompt reset to default", vim.log.levels.INFO)
 						end
 					end)
@@ -322,14 +346,27 @@ function M.register()
 		{ "<leader>aha", function() agent.history_view_agent() end, desc = "View history for an agent (picker)" },
 		{ "<leader>ahw", agent.history_view_workspace, desc = "View history for the live workspace" },
 		{ "<leader>ahp", agent.history_view_project, desc = "View project history (all instances)" },
-	})
+	}
 
-	-- Visual mode keymaps (registered via vim.keymap.set so :<C-u> sets '< '> marks)
+	-- <leader>a1 … <leader>a9: jump straight to the nth session.
+	for n = 1, 9 do
+		table.insert(specs, {
+			"<leader>a" .. n,
+			function()
+				agent.session_jump(n)
+			end,
+			desc = "Jump to agent #" .. n,
+		})
+	end
+
+	wk.add(specs)
+
+	-- Visual mode (registered via vim.keymap.set so :<C-u> sets '< '> marks).
 	vim.keymap.set(
 		"v",
-		"<leader>as",
+		"<leader>ax",
 		":<C-u>lua require('nvim-agent.keymaps').send_selection()<CR>",
-		{ desc = "Send selection to agent", silent = true }
+		{ desc = "Send selection to an agent", silent = true }
 	)
 	vim.keymap.set("v", "<leader>aT", agent.toggle, { desc = "Toggle agent terminal" })
 end
