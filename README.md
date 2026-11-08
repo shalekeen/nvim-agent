@@ -1,16 +1,18 @@
 # nvim-agent
 
-A Neovim plugin to manage and interact with one or more terminal-based coding agents (Claude Code, etc.) inside Neovim. Each agent runs in its own terminal split, gets its own session directory, and is wired up to an MCP server that lets the agent control your buffers in real time.
+A Neovim plugin that hosts one or more terminal-based coding agents (Claude Code, etc.) inside Neovim. You define **agents** once, globally; a **workspace** is the set of agents you run together in a project. Every agent gets its own terminal split and is wired to a bundled MCP server that lets it edit your buffers and talk to its peers in real time.
 
 ![nvim-agent multi-agent demo](docs/nvim-agent-multiagent-demo.gif)
 
 ## Features
 
 - Run one or more coding agents side-by-side in dedicated terminal splits
-- Per-session **flavors** and **checkpoints** — reusable system-prompt + user-notes presets
-- Bundled **MCP server** so agents can read/write buffers, search files, and coordinate with peer agents directly through your editor
-- Auto-injected context (open buffers, cursor, git status, diagnostics, tmux pane captures) before every prompt
-- Multi-agent messaging: agents can send messages, broadcast status, and delegate work to one another
+- A **global agent library**: each agent is a role, a system prompt, standing notes, and pinned dirs, reusable across every project
+- **Workspaces** per project that remember which agents run together, saved automatically on every change
+- An **ephemeral workspace** that is created the first time you open a project, so you can start in seconds and promote it to a named workspace later
+- Bundled **MCP server** so agents can read/write buffers, search files, and coordinate with peers directly through your editor
+- Auto-injected context (open buffers, cursor, git status, diagnostics, tmux pane captures) before every prompt, shared by every agent in the Neovim instance
+- Multi-agent messaging: agents send messages, broadcast status, delegate work, and can spawn or relaunch each other
 - Pluggable **adapter** interface — ships with a Claude Code adapter; add your own
 
 ## Requirements
@@ -60,61 +62,115 @@ return {
 | Option | Default | Description |
 | --- | --- | --- |
 | `adapter` | `nil` | Adapter to use. Built-in: `"claude_code"`. May also be a custom adapter table. |
-| `auto_open` | `false` | When `true`, auto-launch the previously used flavor on Neovim startup (or show the picker on first run). When `false`, do nothing on startup — the user triggers `:NvimAgent` manually and is shown the full picker. |
-| `base_dir` | `~/.nvim-agent` | Where session directories, flavors, and persisted state live. |
+| `auto_open` | `false` | When `true`, show the startup picker (or, on first launch in a directory, the agent picker for the ephemeral workspace) as soon as Neovim starts. When `false`, nothing happens until you run `:NvimAgent`. |
+| `base_dir` | `~/.nvim-agent` | Where the agent library, session dirs, and hook scripts live. |
 | `auto_write_context` | `true` | Refresh `ephemeral.json` when switching to an agent buffer. |
 | `terminal.split_direction` | `"vertical"` | `"vertical"` or `"horizontal"`. |
 | `terminal.split_size` | `0.4` | Fraction of the screen the agent split takes. |
-| `nvim_agent_preamble` | (built-in) | Layer 1 of the composed system prompt — the CLI-neutral runtime contract from nvim-agent (directory layout, context-file catalogue, MCP tools, coordination rules). Always emitted first; cannot be removed by editing flavor or per-agent prompt files. The CLI-specific part (how context is delivered, which native tools to avoid) is layer 1b and comes from the adapter. Override only if you need to customize how nvim-agent introduces itself to the agent. |
-| `default_system_prompt` | (built-in) | Layer 2 fallback. Used when `<active_dir>/system_prompt.md` is missing or empty. Also seeded into newly created flavors as their initial `system_prompt.md`. |
+| `nvim_agent_preamble` | (built-in) | Layer 1 of the composed system prompt — the CLI-neutral runtime contract from nvim-agent (directory layout, context-file catalogue, MCP tools, coordination rules). Always emitted first; cannot be removed by editing an agent. The CLI-specific part (how context is delivered, which native tools to avoid) is layer 1b and comes from the adapter. |
+| `default_system_prompt` | (built-in) | The `system_prompt.md` a newly defined agent starts with. Also the fallback when an agent's prompt is empty. |
 
 ### System prompt composition
 
-Every nvim-agent session's system prompt is built from these layers, joined by blank lines. Empty layers are dropped:
+Every session's system prompt is built from these layers, joined by blank lines. Empty layers are dropped:
 
-1. **`nvim_agent_preamble`** (config option above) — the plugin's CLI-neutral runtime contract. Tells the agent about the directory layout, the context files, the MCP tools, and multi-agent coordination. Always present so editing your flavor can't remove it.
-1b. **Adapter context contract** (`adapter:get_context_contract()`) — how context actually reaches the agent under the CLI in use. The bundled Claude Code adapter describes its `UserPromptSubmit` hook and tells the agent not to use Claude Code's built-in file tools; the base adapter default tells a hook-less CLI to read the files on demand. Per-agent tool permissions likewise come from `adapter:get_agent_permissions()`, whose base default grants nothing.
-2. **`<active_dir>/system_prompt.md`** — the user-editable broad-behavior prompt (the "flavor prompt"). Defaults to `default_system_prompt` when empty/missing. Edit with `:NvimAgent edit prompt`.
-3. **`<active_dir>/agent_prompt.md`** — an optional per-agent persona addendum. Use this in workspace mode so each agent definition has its own narrow specialization on top of the shared flavor prompt. Edit with `:NvimAgent edit agent`. Omitted entirely when missing.
-
-Workspace mode persists both `system_prompt.md` and `agent_prompt.md` in each agent's def dir, so the per-agent layer is checked into git alongside the rest of the agent definition.
+1. **`nvim_agent_preamble`** (config option above) — the plugin's CLI-neutral runtime contract. Tells the agent about the directory layout, the context files, the MCP tools, and multi-agent coordination. Always present so editing an agent can't remove it.
+1b. **Adapter context contract** (`adapter:get_context_contract()`) — how context actually reaches the agent under the CLI in use. The bundled Claude Code adapter describes its `UserPromptSubmit` hook and tells the agent not to use Claude Code's built-in file tools; the base adapter default tells a hook-less CLI to read the files on demand.
+2. **`role.md`** — the agent's role, rendered as a "Your role" section. Every agent has one. It steers the agent's own behaviour from the first turn and is what other agents see when deciding whom to delegate to.
+3. **`system_prompt.md`** — the agent's behaviour prompt. Defaults to `default_system_prompt` when empty.
 
 ### Statusline component
 
-`require("nvim-agent").statusline()` returns a short string identifying the current session's flavor and checkpoint, formatted as `Agent-<session_name>: <flavor> @ <checkpoint>` (e.g. `Agent-main: dev @ base`). It returns an empty string when there is no current session, so it's safe to drop into a global statusline:
+`require("nvim-agent").statusline()` returns `Agent-<session>: <agent> @ <workspace>`, with an `(exited)` suffix when the agent's CLI is not running. It returns an empty string when there is no current session, so it's safe to drop into a global statusline:
 
 ```lua
 vim.opt.statusline = "%f %m%r  %{%v:lua.require('nvim-agent').statusline()%}%=%y  %l:%c  %p%%"
 ```
 
+## Concepts
+
+**Agents** are global. One lives at `~/.nvim-agent/agents/<name>/` and consists of exactly four things, plus an optional fifth:
+
+| File | Purpose |
+| --- | --- |
+| `role.md` | **Required.** A short description of what this agent does. It opens the agent's system prompt, so it guides the agent's own behaviour, and it is published to peers via status files, so other agents use it to decide what to delegate to this one. |
+| `system_prompt.md` | The behaviour prompt. Seeded from `default_system_prompt`. |
+| `user_notes.md` | Standing notes and constraints. |
+| `persistent_dirs.json` | Pinned code paths: `[{ "tag", "path", "description" }]`. |
+| `permissions.json` | Optional, adapter-specific tool permissions (see the adapter README). |
+
+There are no per-project overrides. If a project needs a variant of an agent, copy the agent under a new name with `:NvimAgent agent copy` and edit the copy. Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/agents/spawned/<name>/` and are listed in their own section so they don't crowd out your own; copy one to adopt it.
+
+**Workspaces** are per project. A workspace is a manifest at `<cwd>/.nvim-agent/workspaces/<name>/workspace.json` listing which agents run together:
+
+```json
+{
+  "name": "feature-dev",
+  "agents": [
+    { "name": "Senior SWE", "agent": "Senior SWE" },
+    { "name": "Senior SWE-2", "agent": "Senior SWE" },
+    { "name": "QA", "agent": "QA" }
+  ]
+}
+```
+
+Each entry pairs a **session name** (unique within the workspace, what peers address) with the **global agent** it is built from, so the same agent can run twice. Manifests are written automatically whenever an agent is added or removed; there is no save step. The `.nvim-agent/` directory is runtime state and should be gitignored.
+
+The **ephemeral workspace** is the one named `ephemeral`. It is created automatically the first time you launch nvim-agent in a directory, saved like any other, and offered as "Resume" on later launches. Promote it to a named workspace with `:NvimAgent workspace save-as`.
+
+**Sessions** are live agents in this Neovim instance. A session's `active/` dir is a mirror of its agent's files: anything you edit there (`:NvimAgent edit notes`, `dir add`, the notes keymaps, or just saving the file) is written straight back to the global agent definition. **Membership and liveness are separate.** If an agent's CLI exits, whether you typed `/exit` or it crashed, the session is marked exited and its status file is removed so peers stop delegating to it, but it stays in the workspace. Relaunch it with `:NvimAgent agent restart`, by opening it, or by having a peer call `spawn_agent` with its name. Only `:NvimAgent agent remove` takes an agent out of the workspace.
+
 ## Usage
 
-Once the plugin is loaded, all functionality lives behind the `:NvimAgent` command. With no argument, it toggles the current session's terminal split.
+All functionality lives behind the `:NvimAgent` command. With no argument it toggles the current session's terminal, or opens the startup picker when no workspace is live.
+
+### Startup
+
+On the first launch in a directory there is nothing to pick, so you go straight into choosing agents for the ephemeral workspace: add agents from the library, define new ones on the spot, then launch. On later launches the picker offers:
+
+- **Resume ephemeral workspace** — relaunch the agents you had last time
+- **New workspace** — name it, pick its agents, launch
+- **Load '\<name\>'** — one entry per saved workspace
+
+Loading a workspace while another is live asks before stopping the running agents.
+
+### Commands
 
 ```
-:NvimAgent             " toggle the current session's terminal (or open the picker if no session)
-:NvimAgent open        " open the current session's terminal
-:NvimAgent close       " close the current session's terminal
-:NvimAgent toggle      " same as no-arg form
-:NvimAgent refresh     " regenerate context (ephemeral.json etc.) for the current session
-:NvimAgent flavor      " manage flavors (system prompt + user notes presets)
-:NvimAgent checkpoint  " manage checkpoints within a flavor
-:NvimAgent session     " create / list / switch between agent sessions
-:NvimAgent agent       " spawn / send-message / delegate to peer agents
-:NvimAgent template    " manage agent role templates
-:NvimAgent role        " edit the role/expertise description for the current agent
-:NvimAgent history     " view work history (agent [name] | workspace | project)
-:NvimAgent workspace   " project-local workspace settings
-:NvimAgent edit        " edit context files (prompt | notes | dirs)
-:NvimAgent view        " view context files read-only (prompt | notes | dirs)
-:NvimAgent dir         " open the active session dir in the explorer
-:NvimAgent tmux        " capture a tmux pane into the agent's context
-:NvimAgent setup       " re-run adapter setup (refresh ~/.claude/settings.json, hook script, CLAUDE.md block)
+:NvimAgent                       " toggle current terminal, or open the startup picker
+:NvimAgent open | close | toggle
+:NvimAgent refresh               " regenerate ephemeral.json
+
+:NvimAgent workspace new         " name → pick agents → launch
+:NvimAgent workspace load [name] " load a saved workspace (picker without a name)
+:NvimAgent workspace list
+:NvimAgent workspace remove [name]
+:NvimAgent workspace rename [old] [new]
+:NvimAgent workspace save-as [name]   " promote the live (ephemeral) workspace
+
+:NvimAgent agent add [agent] [as-name]  " add a library agent to the live workspace and launch it
+:NvimAgent agent remove [name]          " stop it and drop it from the workspace
+:NvimAgent agent restart [name]         " relaunch an exited member
+:NvimAgent agent define                 " new global agent: name → role → opens its prompt
+:NvimAgent agent copy [src] [dst]       " duplicate a global agent (project-specific variant / adopt a spawned one)
+:NvimAgent agent edit [name]            " open a global agent's four files in a grid
+:NvimAgent agent delete [name]
+:NvimAgent agent list
+:NvimAgent agent save                   " explicitly write a session's context back to its agent
+
+:NvimAgent session list | switch [name]
+
+:NvimAgent edit prompt | notes | dirs | role     " edit the current session's mirror (syncs to the agent on save)
+:NvimAgent view prompt | notes | dirs | role
+:NvimAgent dir add <tag> <path> <description> | dir remove <tag>
+:NvimAgent tmux add [lines] | clear | view
+:NvimAgent history agent [name] | workspace | project
+:NvimAgent setup                 " re-run adapter setup (hook script etc.)
 ```
 
-Several of these subcommands take a second-level action (e.g. `:NvimAgent flavor create <name>`, `:NvimAgent session new`, `:NvimAgent agent send <name> <msg>`). For the full nested grammar, see `lua/nvim-agent/commands.lua` — tab-completion also covers every nested form.
+Tab-completion covers every nested form, including agent, member, workspace and session names.
 
-A `<leader>a` keymap group is also registered via which-key — see `lua/nvim-agent/keymaps.lua` for the full list.
+A `<leader>a` keymap group is registered via which-key: `<leader>aw` for workspaces, `<leader>aa` for agents, `<leader>aS` for sessions, plus notes, dirs, prompt, tmux and history groups. See `lua/nvim-agent/keymaps.lua` for the full list.
 
 ## How context reaches the agent
 
@@ -124,32 +180,28 @@ When the plugin spawns either the agent CLI (e.g. `claude`) or its MCP server, i
 
 | Var | Agent process | MCP server | Value |
 | --- | :---: | :---: | --- |
-| `NVIM_AGENT_ACTIVE_DIR` | ✓ | ✓ | `~/.nvim-agent/sessions/<instance-id>/<name>/active/` — this session's flavor files |
+| `NVIM_AGENT_ACTIVE_DIR` | ✓ | ✓ | `~/.nvim-agent/sessions/<instance-id>/<name>/active/` — this session's mirror of its agent |
 | `NVIM_AGENT_PROCESS_DIR` | ✓ | ✓ | `~/.nvim-agent/sessions/<instance-id>/` — shared per-Neovim state |
 | `NVIM_AGENT_CWD` | ✓ | ✓ | `vim.fn.getcwd()` at session start |
+| `NVIM_AGENT_BASE_DIR` | ✓ | ✓ | The configured `base_dir` (defaults to `~/.nvim-agent`) |
 | `NVIM_AGENT_INSTANCE_ID` | ✓ | ✓ | UUID minted once per Neovim process when nvim-agent loads |
 | `NVIM_AGENT_RUNTIME_DIR` | ✓ | ✓ | `<cwd>/.nvim-agent/instances/<instance-id>/` — this Neovim instance's peer state (status, messages, history, triggers) |
-| `NVIM_AGENT_BASE_DIR` | ✓ | ✓ | The configured `base_dir` (defaults to `~/.nvim-agent`) |
 | `NVIM_AGENT_NVIM_ADDR` | – | ✓ | `vim.v.servername` — used by the MCP server to RPC into the parent Neovim |
 
 Custom adapters can read these to find the right files (see `lua/nvim-agent/adapter/README.md`).
 
 ### The `UserPromptSubmit` hook
 
-The `claude_code` adapter writes a small shell script to `~/.nvim-agent/hooks/claude_code_prompt.sh` and registers it as a `UserPromptSubmit` hook in two places:
-
-- `~/.claude/settings.json` — global default
-- `<session.dir>/mcp-settings.json` — per-session override (Claude Code is launched with `--mcp-config` pointing at this file)
+The `claude_code` adapter writes a small shell script to `~/.nvim-agent/hooks/claude_code_prompt.sh` and registers it as a `UserPromptSubmit` hook in the per-session `<session.dir>/mcp-settings.json` that Claude Code is launched with via `--mcp-config`.
 
 Claude Code runs the hook before every prompt and prepends the hook's stdout to the user's message as additional context. The script reads files relative to `$NVIM_AGENT_ACTIVE_DIR`, `$NVIM_AGENT_PROCESS_DIR`, `$NVIM_AGENT_CWD`, and `$NVIM_AGENT_RUNTIME_DIR`.
 
 ### What the hook injects on each prompt
 
-- **Session-scoped** (from `$NVIM_AGENT_ACTIVE_DIR`):
-  - `.flavor_meta.json` — current flavor + checkpoint
+- **Session-scoped** (from `$NVIM_AGENT_ACTIVE_DIR`, the agent mirror):
+  - `role.md` — the agent's role
   - `user_notes.md` — standing user instructions
   - `persistent_dirs.json` — pinned code paths
-  - `role.md` — agent's role description (workspace mode)
 - **Project root**: `PROJECT.md` (if present) — shared by all agents in the project
 - **Process-shared** (from `$NVIM_AGENT_PROCESS_DIR`):
   - `ephemeral.json` — open buffers, cursor, git status, diagnostics, quickfix
@@ -163,210 +215,59 @@ Peer state is deliberately keyed by Neovim instance, not by project directory. T
 
 Other adapters can opt into the same flow by emitting a hook script and registering it however the target CLI expects.
 
-## Two ways to use nvim-agent
+## Peer discovery and delegation
 
-- **Standalone agent** — pick a flavor at startup and you're handed a single agent split. No project files involved; everything lives under `~/.nvim-agent/`. This is the default flow when you launch the plugin in any directory.
-- **Project workspace** — run `:NvimAgent workspace init` once per project to create a checked-in directory of agent definitions (system prompts, user notes, roles per agent) plus declarative `workspaces/<name>.json` files that launch a named set of agents together. The init prompt suggests `.nvim-workspace/` as the directory name but you can use any name. Workspace definitions live in your repo; runtime state stays under `<cwd>/.nvim-agent/` (gitignored).
+Every running agent advertises a status file containing its current task and its role, taken from `role.md`. The hook feeds every peer's role and status to each agent before every prompt, and the `list_agent_roles`, `list_agent_statuses`, `send_message`, `trigger_agent`, and `spawn_agent` MCP tools are how agents coordinate. Because the role is both the agent's own opening instruction and the text peers read, write it as a statement of responsibility: "Owns the test suite. Delegate anything that needs new or changed tests here." See `lua/nvim-agent/mcp/tools.lua` for the full tool surface.
 
-You can mix the two — the picker on `:NvimAgent` always offers "Open standalone agent" alongside any workspaces it finds in the current project.
-
-## Workspaces
-
-Workspaces are the project-mode answer to "I want a fixed, reproducible set of agents to launch every time I open this repo." A workspace is a checked-in declaration of *which agents exist in this project, what each one does, and which group of them launches together*. Open the project, hit `:NvimAgent`, pick the workspace, and every agent in it spins up in its own terminal split — each pre-loaded with its own system prompt, role, and notes.
-
-### Initializing a workspace
-
-Run once per project:
-
-```
-:NvimAgent workspace init
-```
-
-You'll be prompted for a directory name (default: `.nvim-workspace`). The plugin creates two trees:
-
-- `<cwd>/<def_dir>/` — checked into git. Holds agent definitions and workspace manifests.
-- `<cwd>/.nvim-agent/` — gitignored. Holds `config.json` plus one `instances/<instance-id>/` subtree per running Neovim with that instance's runtime state (peer discovery, messages, history, triggers).
-
-The choice of `<def_dir>` is recorded in `<cwd>/.nvim-agent/config.json` so the plugin can find it on later launches.
-
-### Defining agents
-
-```
-:NvimAgent agent new        " interactive: prompts for a name, opens the new agent's def dir
-:NvimAgent agent list       " browse all agents in the current workspace
-:NvimAgent agent save       " save the current session's context files back to its def dir
-:NvimAgent agent remove     " delete an agent definition
-:NvimAgent agent set-template  " interactive: pick an agent, then pick a template to link
-```
-
-Each agent lives at `<cwd>/<def_dir>/agents/<name>/` and may contain:
-
-| File | Purpose |
-| --- | --- |
-| `system_prompt.md` | The agent's instructions (only required file) |
-| `user_notes.md` | Standing per-agent user notes |
-| `persistent_dirs.json` | Pinned code paths the agent should know about: `[{ tag, path, description }]` |
-| `.flavor_meta.json` | Flavor + checkpoint metadata (optional — workspace agents don't usually need this) |
-| `role.md` | One-line role description used for peer discovery (e.g. "frontend lead", "test runner") |
-| `.agent_meta.json` | If present and contains `{ "template": "<name>" }`, the agent inherits from a global template (see below) |
-
-Editing any of these files takes effect on the agent's **next** session launch.
-
-### Defining a launchable workspace
-
-A "workspace" in the launcher sense is a manifest at `<cwd>/<def_dir>/workspaces/<name>.json` that names which agents launch together:
-
-```json
-{
-  "name": "feature-dev",
-  "agents": [
-    { "name": "Senior SWE 1", "role": "lead implementer" },
-    { "name": "Senior SWE 2", "role": "reviewer" },
-    { "name": "QA Bot",       "role": "writes tests" }
-  ]
-}
-```
-
-Manage them with:
-
-```
-:NvimAgent workspace new           " interactive: prompts for a name and selects agents
-:NvimAgent workspace launch        " picker over manifests; bootstraps init+new if empty
-:NvimAgent workspace launch <name> " launch a named workspace directly
-:NvimAgent workspace list          " browse all workspace manifests in this project
-:NvimAgent workspace edit          " open the current workspace manifest
-:NvimAgent workspace save          " save the live session set as a workspace
-:NvimAgent workspace remove        " delete a workspace manifest
-```
-
-The `launch` subcommand is also bound to `<leader>awL`. Use it to spin up a workspace when you already have a standalone agent running (for example, when `auto_open=true` resumed your last standalone flavor and you want to drop into multi-agent mode without closing the current session).
-
-A project can hold any number of workspaces — different `<name>.json` files for different launch sets (e.g. `quick-fix.json` with one agent, `full-team.json` with five).
-
-### Launching
-
-When `auto_open` is enabled or you run `:NvimAgent` manually, the picker offers one entry per workspace it finds in the current project, plus the standalone fallback. Picking a workspace runs `workspace_launch` (`init.lua:550`):
-
-1. Writes project permissions for the active adapter (so agents don't get permission-prompted on every read/write).
-2. Initializes this instance's runtime dir at `<cwd>/.nvim-agent/instances/<instance-id>/`.
-3. For each agent in the manifest, in order:
-   - Creates a session with the agent's name.
-   - Loads the agent's content into the session's `active/` dir: template files first (if linked), then any agent-specific overrides on top.
-   - If the agent has no `.flavor_meta.json`, prompts for a flavor + checkpoint before continuing.
-   - Spawns a terminal split running the configured adapter CLI (e.g. `claude`).
-
-Sessions are processed sequentially so that flavor pickers don't overlap.
-
-### Roles and peer discovery
-
-The hook script (see "How context reaches the agent" above) reads `$NVIM_AGENT_RUNTIME_DIR/status/*.json` and `$NVIM_AGENT_RUNTIME_DIR/messages/<agent>.md` before every prompt and feeds the result to the agent. Discovery is scoped to the Neovim instance: agents launched from a second Neovim window on the same project are not peers. Each agent's role description from `role.md` is included in the peer summary, so a multi-agent workspace inherently tells every agent who else is around and what they're doing. The `send_message`, `update_status`, and `read_messages` MCP tools are how agents talk to each other — see `lua/nvim-agent/mcp/tools.lua` for the full multi-agent tool surface.
-
-### Project permissions
-
-```
-:NvimAgent workspace permissions
-```
-
-Asks the active adapter to write a `.claude/settings.json` (or equivalent) inside the project so the agent CLIs running in this repo don't trigger permission prompts on every file/bash operation. Run this once after init; `workspace_launch` also calls it implicitly on every launch.
-
-### Agent templates
-
-Templates let you write a system prompt + user notes once and reuse them across many agents and projects. Useful when you have a stock persona — "Senior SWE", "test writer", "rubber duck" — that you want to spawn in lots of different workspaces.
-
-```
-:NvimAgent template create   " create a template from an existing agent's def dir (interactive)
-:NvimAgent template list     " browse global templates
-:NvimAgent template remove   " delete a template (interactive picker)
-```
-
-**Where templates live:** `~/.nvim-agent/agent_templates/<name>/`. One canonical copy per template, global to the user (not project-scoped).
-
-**Linking agents to templates:** an agent inherits from a template by having `.agent_meta.json` in its def dir contain `{ "template": "<template_name>" }`. The link is by **name** — the template files are *not* duplicated into the agent's def dir. Use `:NvimAgent agent set-template ...` to wire this up, or write the JSON by hand.
-
-**How loading works at session start** (`agent_load_content` in `workspace.lua:310`):
-
-1. Read the agent's `.agent_meta.json`.
-2. If `template` is set, copy the template's files (`system_prompt.md`, `user_notes.md`, `persistent_dirs.json`, `role.md`) from `~/.nvim-agent/agent_templates/<name>/` into the session's `active/` dir.
-3. Overlay any agent-specific files from `<cwd>/<def_dir>/agents/<agent>/` on top — agent files win on conflict.
-
-**Concrete example.** You define a `Senior SWE` template, then create two agents in your workspace — `Senior SWE 1` and `Senior SWE 2` — both with `.agent_meta.json` pointing at the same template. On disk:
-
-- One global copy of the template at `~/.nvim-agent/agent_templates/Senior SWE/` (no duplication).
-- Two tiny `.agent_meta.json` files in `<def_dir>/agents/Senior SWE 1/` and `<def_dir>/agents/Senior SWE 2/` — that's the entire on-disk overhead per linked agent (plus any agent-specific overrides you choose to add).
-- At runtime, two ephemeral copies live under `~/.nvim-agent/sessions/<instance-id>/Senior SWE 1/active/` and `…/Senior SWE 2/active/`. These are the working copies the hook script feeds to each agent via `$NVIM_AGENT_ACTIVE_DIR`. They die with the Neovim process.
-
-**Propagation:** editing the template's `system_prompt.md` propagates to both agents on their **next** session launch. Live sessions keep their already-copied files until restart. Editing per-agent overrides only affects that agent.
+`spawn_agent(name, system_prompt?, role?, user_notes?)` has three behaviours: if `name` is an exited peer it is relaunched; if it is an agent in the library it is added to the workspace and launched; otherwise `system_prompt` and `role` are required and a new agent is saved to the library's spawned section, added, and launched.
 
 ## How nvim-agent uses the filesystem
 
-There are three roots, each with a different lifetime and ownership.
-
-### 1. Global runtime — `~/.nvim-agent/` (per user, persistent)
+### 1. Global — `~/.nvim-agent/` (per user, persistent)
 
 ```
 ~/.nvim-agent/
+├── agents/                            # the global agent library
+│   ├── <name>/                        # one dir per agent you defined
+│   │   ├── role.md                    # required
+│   │   ├── system_prompt.md
+│   │   ├── user_notes.md
+│   │   ├── persistent_dirs.json
+│   │   └── permissions.json           # optional, adapter-specific
+│   └── spawned/<name>/                # agents created at runtime via spawn_agent
 ├── sessions/<instance-id>/            # one dir per running Neovim, keyed by its startup UUID (ephemeral)
 │   ├── ephemeral.json                 # editor state, shared by all sessions in this nvim
 │   ├── tmux_captures.json             # captured tmux panes, shared
 │   └── <session_name>/
-│       ├── active/                    # the per-session context dir
-│       │   ├── system_prompt.md
-│       │   ├── user_notes.md
-│       │   ├── persistent_dirs.json
-│       │   └── .flavor_meta.json      # which flavor + checkpoint this session loaded
+│       ├── active/                    # mirror of the agent's files for this session
 │       └── mcp-settings.json          # adapter-specific MCP wiring
-├── hooks/                             # adapter hook scripts
-│   └── claude_code_prompt.sh          # UserPromptSubmit hook for the Claude Code adapter
-├── agent_templates/<name>/            # reusable agent role templates
-│   ├── system_prompt.md
-│   ├── user_notes.md
-│   ├── persistent_dirs.json
-│   └── role.md
-├── <flavor_name>/                     # one directory per flavor, sharable across projects
-│   ├── system_prompt.md
-│   ├── user_notes.md
-│   ├── persistent_dirs.json
-│   └── checkpoints/<name>/            # optional named variants of the flavor
-│       ├── system_prompt.md
-│       ├── user_notes.md
-│       └── persistent_dirs.json
-└── last_flavor.json                   # last-used flavor (powers "Use Active" + auto_open)
+└── hooks/                             # adapter hook scripts
+    └── claude_code_prompt.sh
 ```
 
-Flavors live as top-level directories under `~/.nvim-agent/`, alongside the `sessions/`, `hooks/`, and `agent_templates/` metadata dirs. The names `active`, `sessions`, `hooks`, and `agent_templates` are reserved and cannot be used as flavor names.
+`sessions/<instance-id>/` dies with the Neovim process. Everything else persists.
 
-`sessions/<instance-id>/` is ephemeral — entries die with the Neovim process. Everything else persists across restarts.
-
-### 2. Project-local runtime — `<cwd>/.nvim-agent/` (gitignored)
-
-Created on demand when a workspace is initialised or when peer-agent messaging fires. **Add `.nvim-agent/` to your project's `.gitignore` — it holds runtime state, not configuration.**
+### 2. Project-local — `<cwd>/.nvim-agent/` (gitignored)
 
 ```
 <cwd>/.nvim-agent/
-├── config.json                        # { "workspace_def_dir": "<rel-path>" } — project-level
+├── workspaces/<name>/workspace.json   # { "name", "agents": [{ "name", "agent" }] }, saved on every change
+├── workspaces/ephemeral/workspace.json
 └── instances/<instance-id>/           # one subtree per running Neovim (UUID minted at setup)
     ├── status/<agent>.json            # peer discovery: each running agent advertises here
     ├── messages/<agent>.md            # mailboxes for inter-agent send_message()
     ├── history/<agent>.md             # per-agent work logs for this instance
-    └── triggers/<agent>.md            # wakeup signals (touch a file → agent resumes)
+    └── triggers/<agent>.md            # wakeup signals
 ```
 
-Each Neovim instance gets its own `instances/<instance-id>/` subtree, exported to its agents as `$NVIM_AGENT_RUNTIME_DIR`. That is what keeps two Neovim windows on the same project from leaking context into each other. Subtrees are not deleted on exit; `:NvimAgent history project` stitches history from every instance back together for you, while agents themselves only ever see their own instance's history.
+**Add `.nvim-agent/` to your project's `.gitignore`.** Workspaces reference agents from your personal library, so they are not meaningful to share. Instance subtrees are not deleted on exit; `:NvimAgent history project` stitches history from every instance back together for you, while agents themselves only ever see their own instance.
 
-### 3. Workspace definitions — `<cwd>/<def_dir>/` (project workspaces only, checked into git)
+### Migrating from earlier versions
 
-Only present in projects you've initialised with `:NvimAgent workspace init`. The `<def_dir>` name is whatever you choose at init time; the choice is recorded in `.nvim-agent/config.json`. Standalone agent use doesn't touch this directory.
+On first start, nvim-agent imports the old layouts once and leaves the sources in place:
 
-```
-<cwd>/<def_dir>/
-├── agents/<name>/                     # one directory per agent, committed to git
-│   ├── system_prompt.md
-│   ├── user_notes.md
-│   ├── persistent_dirs.json
-│   ├── .flavor_meta.json              # flavor/checkpoint metadata for this agent
-│   └── role.md                        # role description used for peer discovery
-└── workspaces/<name>.json             # { "name": ..., "agents": [{ "name": ..., "role": ... }] }
-```
+- Global flavors (`~/.nvim-agent/<flavor>/`, base files only; checkpoints are dropped) and agent templates (`~/.nvim-agent/agent_templates/`) become agents in `~/.nvim-agent/agents/`. Anything imported without a `role.md` gets a placeholder role you should replace.
+- A project with a checked-in definition directory (recorded in `.nvim-agent/config.json`) has its agents imported into the global library and its workspace manifests rewritten into the new location the first time you run `:NvimAgent` there. The old `config.json` is renamed `config.json.legacy`.
 
 ## Custom adapters
 
