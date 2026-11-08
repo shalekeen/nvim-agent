@@ -295,6 +295,17 @@ function M.find_entry(manifest, session_name)
 	return nil
 end
 
+--- Re-read a manifest's members from disk before mutating them. Several
+--- Neovim instances may have the same workspace live; each holds its own
+--- in-memory copy, and writing a stale copy back would silently drop
+--- members another instance added or removed in the meantime.
+local function refresh_members(manifest, cwd)
+	local fresh = M.read(manifest.name, cwd)
+	if fresh then
+		manifest.agents = fresh.agents
+	end
+end
+
 --- Add a member and persist. `entry.name` is the session name (defaults to
 --- the agent name) and must be unique within the workspace; `entry.agent` is
 --- the global agent it is built from and must exist.
@@ -304,6 +315,7 @@ end
 --- @return boolean ok, string|nil err
 function M.add_entry(manifest, entry, cwd)
 	local agent_mod = require("nvim-agent.agent")
+	refresh_members(manifest, cwd)
 	if not entry or not entry.agent then
 		return false, "entry.agent is required"
 	end
@@ -330,6 +342,7 @@ end
 --- @param cwd string|nil
 --- @return boolean ok, string|nil err
 function M.remove_entry(manifest, session_name, cwd)
+	refresh_members(manifest, cwd)
 	local _, idx = M.find_entry(manifest, session_name)
 	if not idx then
 		return false, "'" .. session_name .. "' is not in workspace '" .. manifest.name .. "'"
