@@ -21,8 +21,13 @@ local function decode_response(result)
 	return data
 end
 
--- Unique sequence number for temp file names
+-- Temp file names must be unique across EVERY MCP server process, not just
+-- within one: each agent runs its own server, and two agents making their
+-- first edit in the same second used to collide on
+-- /tmp/nvim_agent_<time>_00001.tmp — one agent's Neovim would then read the
+-- other agent's content. Mixing in our own pid makes the name per-process.
 local _tmp_seq = 0
+local _tmp_pid = vim.loop.os_getpid()
 
 local function shell_escape(s)
 	return "'" .. s:gsub("'", "'\\''") .. "'"
@@ -73,7 +78,7 @@ end
 -- Write data to a unique temp file; returns path or nil, err.
 local function write_tmp(data)
 	_tmp_seq = _tmp_seq + 1
-	local path = string.format("/tmp/nvim_agent_%d_%05d.tmp", os.time(), _tmp_seq)
+	local path = string.format("/tmp/nvim_agent_%d_%d_%05d.tmp", _tmp_pid, os.time(), _tmp_seq)
 	local f = io.open(path, "w")
 	if not f then
 		return nil, "Cannot create temp file: " .. path
