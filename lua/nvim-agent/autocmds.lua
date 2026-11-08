@@ -95,8 +95,16 @@ function M.register()
 				local ok_ws, workspace_mod = pcall(require, "nvim-agent.workspace")
 				local ok_agent, agent_mod = pcall(require, "nvim-agent.agent")
 				for _, sess in ipairs(session_mod.list()) do
-					-- Persist active_dir → workspace def dir for any workspace session.
-					if ok_ws and ok_agent and workspace_mod.has_workspace(cwd) then
+					-- Persist active_dir → workspace def dir, but only for sessions
+					-- that are real workspace agents. A standalone session opened
+					-- inside a workspace project must not be written into the
+					-- checked-in definitions directory on exit.
+					if
+						ok_ws
+						and ok_agent
+						and workspace_mod.has_workspace(cwd)
+						and agent_mod.get(sess.name, cwd)
+					then
 						pcall(agent_mod.save_content, sess.name, sess.active_dir, cwd)
 					end
 					require("nvim-agent.terminal").cleanup(sess.id)
@@ -137,8 +145,11 @@ function M.register()
 			end
 
 			local cwd = vim.fn.getcwd()
-			local trigger_dir = cwd .. "/.nvim-agent/triggers"
-			local msg_dir = cwd .. "/.nvim-agent/messages"
+			-- Scoped to this Neovim instance's runtime tree: a trigger written
+			-- for "main" in another instance must not wake our "main".
+			local instance_dir = require("nvim-agent.workspace").instance_runtime_dir(cwd)
+			local trigger_dir = instance_dir .. "/triggers"
+			local msg_dir = instance_dir .. "/messages"
 			local terminal = require("nvim-agent.terminal")
 
 			for _, sess in ipairs(session_mod.list()) do
@@ -204,10 +215,11 @@ function M.register()
 	)
 
 	-- Poll every 30 s for new messages addressed to the current session.
-	-- Messages live in <cwd>/.nvim-agent/messages/<name>.md — project-local so
-	-- they persist across Neovim restarts and are visible to all instances for
-	-- this project. This timer only surfaces a Neovim notification; the full
-	-- content is injected into the agent's context by the UserPromptSubmit hook.
+	-- Messages live in <instance_runtime_dir>/messages/<name>.md — scoped to
+	-- this Neovim instance so peers in other instances of the same project
+	-- never land in our mailbox. This timer only surfaces a Neovim
+	-- notification; the full content is injected into the agent's context by
+	-- the adapter's pre-prompt hook.
 	M._msg_timer = vim.loop.new_timer()
 	M._msg_timer:start(
 		30000,
@@ -223,7 +235,10 @@ function M.register()
 			end
 
 			local cwd = vim.fn.getcwd()
-			local msg_file = cwd .. "/.nvim-agent/messages/" .. sess.name .. ".md"
+			local msg_file = require("nvim-agent.workspace").instance_runtime_dir(cwd)
+				.. "/messages/"
+				.. sess.name
+				.. ".md"
 			local f = io.open(msg_file, "r")
 			if not f then
 				return

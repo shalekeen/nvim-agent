@@ -91,9 +91,33 @@ local agent = require("nvim-agent.agent")
 local def_dir = workspace.init(cwd, ".test-defs")
 check("workspace.init returns def_dir path", def_dir == cwd .. "/.test-defs", "got " .. tostring(def_dir))
 check("def_dir exists after init", vim.fn.isdirectory(cwd .. "/.test-defs") == 1)
-check("runtime .nvim-agent/messages exists", vim.fn.isdirectory(cwd .. "/.nvim-agent/messages") == 1)
-check("runtime .nvim-agent/status exists", vim.fn.isdirectory(cwd .. "/.nvim-agent/status") == 1)
-check("runtime .nvim-agent/history exists", vim.fn.isdirectory(cwd .. "/.nvim-agent/history") == 1)
+-- Peer state is namespaced per Neovim instance under
+-- <cwd>/.nvim-agent/instances/<instance_id>/ so two Neovims open on the same
+-- project never share status/messages/history/triggers. config.json stays
+-- at the project level because it only points at the def dir.
+local session = require("nvim-agent.session")
+local inst_dir = workspace.instance_runtime_dir(cwd)
+check(
+	"session.instance_id is a v4 UUID",
+	type(session.instance_id) == "string"
+		and #session.instance_id == 36
+		and session.instance_id:match("^%x+%-%x+%-4%x%x%x%-[89ab]%x%x%x%-%x+$") ~= nil,
+	"got " .. tostring(session.instance_id)
+)
+assert_eq("instance_id is stable across reads", require("nvim-agent.session").instance_id, session.instance_id)
+assert_eq(
+	"instance_runtime_dir = <cwd>/.nvim-agent/instances/<instance_id>",
+	inst_dir,
+	cwd .. "/.nvim-agent/instances/" .. session.instance_id
+)
+check("runtime instance messages/ exists", vim.fn.isdirectory(inst_dir .. "/messages") == 1)
+check("runtime instance status/ exists", vim.fn.isdirectory(inst_dir .. "/status") == 1)
+check("runtime instance history/ exists", vim.fn.isdirectory(inst_dir .. "/history") == 1)
+check("runtime instance triggers/ exists", vim.fn.isdirectory(inst_dir .. "/triggers") == 1)
+check("no shared project-level status/ is created", vim.fn.isdirectory(cwd .. "/.nvim-agent/status") == 0)
+check("no shared project-level messages/ is created", vim.fn.isdirectory(cwd .. "/.nvim-agent/messages") == 0)
+check("config.json stays at the project level", vim.fn.filereadable(cwd .. "/.nvim-agent/config.json") == 1)
+assert_eq("init_runtime returns the instance dir", workspace.init_runtime(cwd), inst_dir)
 check("workspace_def_dir written to config.json", workspace.read_config(cwd).workspace_def_dir == ".test-defs")
 check("has_workspace returns true after init", workspace.has_workspace(cwd) == true)
 

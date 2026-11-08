@@ -606,7 +606,7 @@ function M.workspace_launch(workspace, cwd)
 		-- Lock + tmpfile-rename: races with the agent's own MCP update_status
 		-- that may fire seconds after launch on the same path. Lock keeps the
 		-- two writes serialized; rename keeps readers from seeing a half-written file.
-		local status_dir = workspace_mod.runtime_dir(cwd) .. "/status"
+		local status_dir = workspace_mod.instance_runtime_dir(cwd) .. "/status"
 		vim.fn.mkdir(status_dir, "p")
 		local status_path = status_dir .. "/" .. agent.name .. ".json"
 		local payload = vim.json.encode({
@@ -1349,7 +1349,7 @@ function M.spawn_agent_noninteractive(agent_name, system_prompt, role, user_note
 	flavor_mod.write_meta(agent_name, nil, sess.active_dir)
 
 	-- Write initial status file for peer discovery
-	local status_dir = workspace_mod.runtime_dir(cwd) .. "/status"
+	local status_dir = workspace_mod.instance_runtime_dir(cwd) .. "/status"
 	vim.fn.mkdir(status_dir, "p")
 	local sf = io.open(status_dir .. "/" .. agent_name .. ".json", "w")
 	if sf then
@@ -1626,7 +1626,13 @@ function M.graceful_quit()
 		local agent_mod = require("nvim-agent.agent")
 		if workspace_mod.has_workspace(cwd) then
 			for _, sess in ipairs(sessions) do
-				pcall(agent_mod.save_content, sess.name, sess.active_dir, cwd)
+				-- Only sessions that correspond to a real agent definition are
+				-- persisted. A standalone session (e.g. "main") that happens
+				-- to be open inside a workspace project must not materialise
+				-- as <def_dir>/agents/main/ on exit.
+				if agent_mod.get(sess.name, cwd) then
+					pcall(agent_mod.save_content, sess.name, sess.active_dir, cwd)
+				end
 			end
 			vim.notify("nvim-agent: workspace state saved", vim.log.levels.INFO)
 		end
@@ -1683,11 +1689,11 @@ local function open_history_scratch(title, files)
 end
 
 --- View the work history for a single agent (picker when name is nil).
---- History file: <cwd>/.nvim-agent/history/<name>.md
+--- History file: <instance_runtime_dir>/history/<name>.md
 --- @param name string|nil  Agent name; shows a picker if nil
 function M.history_view_agent(name)
 	local cwd = vim.fn.getcwd()
-	local history_dir = cwd .. "/.nvim-agent/history"
+	local history_dir = require("nvim-agent.workspace").instance_runtime_dir(cwd) .. "/history"
 
 	if name then
 		local path = history_dir .. "/" .. name .. ".md"
@@ -1751,7 +1757,7 @@ function M.history_view_workspace()
 		vim.notify("nvim-agent: no agents defined in workspace", vim.log.levels.INFO)
 		return
 	end
-	local history_dir = cwd .. "/.nvim-agent/history"
+	local history_dir = workspace_mod.instance_runtime_dir(cwd) .. "/history"
 	local files = {}
 	for _, a in ipairs(agents) do
 		table.insert(files, { name = a.name, path = history_dir .. "/" .. a.name .. ".md" })
@@ -1759,19 +1765,23 @@ function M.history_view_workspace()
 	open_history_scratch("Workspace History", files)
 end
 
---- View aggregated history for all agents that have history files in the project.
+--- View aggregated history for every agent that has a history file in the
+--- project, across ALL Neovim instances that have ever run here. Agents
+--- themselves only ever see their own instance's history; this viewer is the
+--- one place the per-instance trees are stitched back together for the user.
 function M.history_view_project()
 	local cwd = vim.fn.getcwd()
-	local history_dir = cwd .. "/.nvim-agent/history"
-	local paths = vim.fn.glob(history_dir .. "/*.md", false, true)
+	local instances_dir = require("nvim-agent.workspace").runtime_dir(cwd) .. "/instances"
+	local paths = vim.fn.glob(instances_dir .. "/*/history/*.md", false, true)
 	if #paths == 0 then
 		vim.notify("nvim-agent: no history files found in project", vim.log.levels.INFO)
 		return
 	end
 	local files = {}
 	for _, p in ipairs(paths) do
-		local n = vim.fn.fnamemodify(p, ":t:r")
-		table.insert(files, { name = n, path = p })
+		local agent_name = vim.fn.fnamemodify(p, ":t:r")
+		local instance_id = vim.fn.fnamemodify(p, ":h:h:t")
+		table.insert(files, { name = agent_name .. "  (instance " .. instance_id:sub(1, 8) .. ")", path = p })
 	end
 	open_history_scratch("Project History", files)
 end

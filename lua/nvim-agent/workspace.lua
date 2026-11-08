@@ -3,10 +3,15 @@
 -- Two-layer directory structure:
 --
 --   <cwd>/.nvim-agent/             RUNTIME — gitignored, ephemeral state
---     config.json                  { workspace_def_dir = "<rel-path>" }
---     messages/                    agent-to-agent messages
---     status/                      peer discovery (*.json)
---     history/                     persistent work logs (*.md)
+--     config.json                  { workspace_def_dir = "<rel-path>" }  (project-level)
+--     instances/<instance_id>/     one subtree per running Neovim instance:
+--       messages/                  agent-to-agent messages
+--       status/                    peer discovery (*.json)
+--       history/                   per-agent work logs (*.md)
+--       triggers/                  wakeup signals
+--
+-- Peer state is namespaced by session.instance_id so two Neovim instances
+-- open on the same project never see each other's agents.
 --
 --   <cwd>/<def_dir>/               DEFINITIONS — checked into git, user-named
 --     agents/<name>/               one directory per agent, containing:
@@ -71,21 +76,37 @@ end
 -- Runtime dir  (<cwd>/.nvim-agent/ — gitignored)
 ------------------------------------------------------------------------
 
---- Return the runtime .nvim-agent/ directory path (NOT checked into git).
+--- Return the project-level runtime .nvim-agent/ directory path (NOT checked
+--- into git). Only config.json lives directly here; all peer state is under
+--- instance_runtime_dir().
 --- @param cwd string|nil
 --- @return string
 function M.runtime_dir(cwd)
 	return (cwd or vim.fn.getcwd()) .. "/.nvim-agent"
 end
 
---- Create the runtime directory structure (messages, status, history).
+--- Return this Neovim instance's runtime directory:
+---   <cwd>/.nvim-agent/instances/<instance_id>/
+--- Everything agents share with their peers (status, messages, history,
+--- triggers) lives here. The same path is handed to the agent CLI and MCP
+--- server as $NVIM_AGENT_RUNTIME_DIR so the hook script and tools read and
+--- write exactly this tree and no other instance's.
 --- @param cwd string|nil
---- @return string  Runtime dir path
+--- @return string
+function M.instance_runtime_dir(cwd)
+	return M.runtime_dir(cwd) .. "/instances/" .. require("nvim-agent.session").instance_id
+end
+
+--- Create the per-instance runtime directory structure
+--- (messages, status, history, triggers).
+--- @param cwd string|nil
+--- @return string  Instance runtime dir path
 function M.init_runtime(cwd)
-	local dir = M.runtime_dir(cwd)
+	local dir = M.instance_runtime_dir(cwd)
 	vim.fn.mkdir(dir .. "/messages", "p")
 	vim.fn.mkdir(dir .. "/status", "p")
 	vim.fn.mkdir(dir .. "/history", "p")
+	vim.fn.mkdir(dir .. "/triggers", "p")
 	return dir
 end
 

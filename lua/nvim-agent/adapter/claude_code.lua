@@ -223,6 +223,8 @@ function M:setup_session_mcp(session)
 					NVIM_AGENT_PROCESS_DIR = session.process_dir,
 					NVIM_AGENT_CWD = vim.fn.getcwd(),
 					NVIM_AGENT_BASE_DIR = config.get().base_dir,
+					NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
+					NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd()),
 				},
 			},
 		},
@@ -264,6 +266,10 @@ local function hook_script_content()
 ACTIVE_DIR="${NVIM_AGENT_ACTIVE_DIR}"
 PROCESS_DIR="${NVIM_AGENT_PROCESS_DIR}"
 CWD="${NVIM_AGENT_CWD}"
+# Per-Neovim-instance peer state (status, messages, history, triggers).
+# Deliberately NOT derived from $CWD: two Neovim instances on the same
+# project each get their own tree, and this var is how the hook finds ours.
+RUNTIME_DIR="${NVIM_AGENT_RUNTIME_DIR}"
 if [ -z "$ACTIVE_DIR" ]; then
     echo "nvim-agent: NVIM_AGENT_ACTIVE_DIR not set (not running inside nvim-agent?)" >&2
     exit 0
@@ -304,9 +310,9 @@ for f in .flavor_meta.json persistent_dirs.json user_notes.md; do
 done
 
 # --- 3. Persistent agent state (occasional appends) -------------------------
-# All project-level communication lives in $CWD/.nvim-agent/
-if [ -n "$CWD" ] && [ -n "$SESSION_NAME" ]; then
-    PROJ_DIR="$CWD/.nvim-agent"
+# All peer communication for THIS Neovim instance lives in $RUNTIME_DIR
+if [ -n "$RUNTIME_DIR" ] && [ -n "$SESSION_NAME" ]; then
+    PROJ_DIR="$RUNTIME_DIR"
 
     # agent_history.md grows when the agent calls log_work — between calls it's stable.
     PROJ_HIST="$PROJ_DIR/history/$SESSION_NAME.md"
@@ -326,10 +332,10 @@ if [ -n "$PROCESS_DIR" ] && [ -f "$PROCESS_DIR/tmux_captures.json" ]; then
 fi
 
 # --- 5. Multi-agent state (volatile when peers are active) ------------------
-if [ -n "$CWD" ] && [ -n "$SESSION_NAME" ]; then
-    PROJ_DIR="$CWD/.nvim-agent"
+if [ -n "$RUNTIME_DIR" ] && [ -n "$SESSION_NAME" ]; then
+    PROJ_DIR="$RUNTIME_DIR"
 
-    # Status and role of all peer agents (from .nvim-agent/status/*.json).
+    # Status and role of all peer agents in this instance (status/*.json).
     # Each peer rewrites their status file when they call update_status.
     FOUND_PEER=false
     for status_file in "$PROJ_DIR/status/"*.json; do

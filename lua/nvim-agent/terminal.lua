@@ -96,12 +96,18 @@ local function launch_session_in_window(sess, win, adapter)
 	sess.winnr = win
 	vim.api.nvim_set_current_win(win)
 
+	local cwd = vim.fn.getcwd()
 	sess.jobid = vim.fn.termopen(adapter:get_cmd(sess), {
 		env = {
 			NVIM_AGENT_ACTIVE_DIR = sess.active_dir,
 			NVIM_AGENT_PROCESS_DIR = sess.process_dir,
-			NVIM_AGENT_CWD = vim.fn.getcwd(),
+			NVIM_AGENT_CWD = cwd,
 			NVIM_AGENT_BASE_DIR = require("nvim-agent.config").get().base_dir,
+			-- Per-instance identity. The hook script reads peer state from
+			-- NVIM_AGENT_RUNTIME_DIR so each Neovim instance's agents only
+			-- ever see their own siblings.
+			NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
+			NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(cwd),
 		},
 		on_exit = function(_, code, _)
 			vim.schedule(function()

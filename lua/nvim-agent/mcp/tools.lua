@@ -4,34 +4,41 @@ local nvim_rpc = require("nvim_rpc")
 local json = vim.json
 local filelock = require("filelock")
 
--- Context directories inherited from the Claude Code process environment.
--- Each Claude Code process launched by nvim-agent has these set:
+-- Context directories inherited from the agent CLI's process environment.
+-- Every agent process launched by nvim-agent has these set:
 --   NVIM_AGENT_ACTIVE_DIR  — session-specific dir (flavor files: system_prompt, notes, dirs, meta)
 --   NVIM_AGENT_PROCESS_DIR — process-level dir (ephemeral.json, shared by all sessions)
---   NVIM_AGENT_CWD         — working directory of the project
+--   NVIM_AGENT_RUNTIME_DIR — this Neovim instance's peer-state root
+--                            (<cwd>/.nvim-agent/instances/<instance_id>/)
+-- RUNTIME_DIR is required for every peer/history tool. There is intentionally
+-- no fallback to <cwd>/.nvim-agent: a missing var must fail loudly rather
+-- than silently share state with other Neovim instances on the same project.
 local ACTIVE_DIR = os.getenv("NVIM_AGENT_ACTIVE_DIR") or ""
-local CWD = os.getenv("NVIM_AGENT_CWD") or ""
+local RUNTIME_DIR = os.getenv("NVIM_AGENT_RUNTIME_DIR") or ""
 
 -- Derive this agent's name from the active dir path.
--- ACTIVE_DIR structure: .../.nvim-agent/sessions/<pid>/<name>/active
+-- ACTIVE_DIR structure: .../.nvim-agent/sessions/<instance_id>/<name>/active
 local AGENT_NAME = ACTIVE_DIR:match("/([^/]+)/active/?$") or "unknown"
 
 ------------------------------------------------------------------------
 -- Messaging and coordination helpers (pure file I/O — no Neovim RPC)
--- All runtime communication lives in <cwd>/.nvim-agent/:
+-- All runtime communication lives in $NVIM_AGENT_RUNTIME_DIR:
 --   messages/<name>.md  — per-agent mailbox (append-only, cleared on read)
 --   status/<name>.json  — per-agent status + role (last written wins)
+--   history/<name>.md   — per-agent work log
+--   triggers/<name>.md  — wakeup signals consumed by the parent Neovim
 ------------------------------------------------------------------------
 
 local function project_comm_dir(subdir)
-	return CWD .. "/.nvim-agent/" .. subdir
+	return RUNTIME_DIR .. "/" .. subdir
 end
 
 --- List names of all peer agents that have written a status file.
---- Peers are discovered from CWD/.nvim-agent/status/*.json (excludes self).
+--- Peers are discovered from $RUNTIME_DIR/status/*.json (excludes self), so
+--- only agents hosted by the same Neovim instance are ever visible.
 local function list_peer_names()
 	local peers = {}
-	if CWD == "" then
+	if RUNTIME_DIR == "" then
 		return peers
 	end
 	local handle = io.popen('ls "' .. project_comm_dir("status") .. '"/*.json 2>/dev/null')
@@ -85,8 +92,8 @@ end
 --- Append a formatted message to a recipient's mailbox file. Holds an
 --- exclusive lock so concurrent senders cannot interleave bytes.
 local function deliver_message(recipient, from, content)
-	if CWD == "" then
-		return false, "NVIM_AGENT_CWD not set"
+	if RUNTIME_DIR == "" then
+		return false, "NVIM_AGENT_RUNTIME_DIR not set"
 	end
 	local msg_dir = project_comm_dir("messages")
 	os.execute("mkdir -p " .. msg_dir)
@@ -472,7 +479,7 @@ M.definitions = {
 	{
 		name = "log_work",
 		description = "Append a timestamped entry to your work history file "
-			.. "(.nvim-agent/history/<name>.md). Per-agent history files are "
+			.. "($NVIM_AGENT_RUNTIME_DIR/history/<name>.md). Per-agent history files are "
 			.. "aggregated by read_cwd_history so all peers can see what every agent has done. "
 			.. "Call this after completing any meaningful unit of work "
 			.. "(feature implemented, bug fixed, research completed). Be specific — peers and "
@@ -502,8 +509,8 @@ M.definitions = {
 
 	{
 		name = "read_cwd_history",
-		description = "Read the full shared work history for the current directory — "
-			.. "every entry logged by any agent across all sessions. "
+		description = "Read the full shared work history for this Neovim instance — "
+			.. "every entry logged by any agent it has hosted. "
 			.. "Use this at the start of a new session to orient yourself on past work.",
 		inputSchema = {
 			type = "object",
@@ -878,8 +885,8 @@ function M.execute(tool_name, arguments)
 		if not message or message == "" then
 			return { { type = "text", text = "Error: 'message' is required" } }, true
 		end
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
 		-- 1. Deliver message to mailbox
@@ -890,7 +897,7 @@ function M.execute(tool_name, arguments)
 
 		-- 2. Write trigger file so the continuation timer can also find it.
 		--    Locked because the timer truncates this same file when it fires.
-		local trigger_dir = CWD .. "/.nvim-agent/triggers"
+		local trigger_dir = project_comm_dir("triggers")
 		os.execute("mkdir -p " .. trigger_dir)
 		local trigger_path = trigger_dir .. "/" .. to .. ".md"
 		with_lock(trigger_path, function()
@@ -940,8 +947,8 @@ function M.execute(tool_name, arguments)
 		if not content or content == "" then
 			return { { type = "text", text = "Error: 'content' is required" } }, true
 		end
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
 		-- Helper: deliver + write trigger file + attempt immediate wakeup.
@@ -953,7 +960,7 @@ function M.execute(tool_name, arguments)
 			end
 			-- Write trigger file so the continuation timer wakes the agent within 30 s
 			-- even if the RPC wakeup below fails. Locked: the timer truncates this file.
-			local trigger_dir = CWD .. "/.nvim-agent/triggers"
+			local trigger_dir = project_comm_dir("triggers")
 			os.execute("mkdir -p " .. trigger_dir)
 			local trigger_path = trigger_dir .. "/" .. recipient .. ".md"
 			with_lock(trigger_path, function()
@@ -1000,8 +1007,8 @@ function M.execute(tool_name, arguments)
 	-- read_messages  (reads and clears this agent's mailbox)
 	-- ----------------------------------------------------------------
 	elseif tool_name == "read_messages" then
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
 		local path = project_comm_dir("messages") .. "/" .. AGENT_NAME .. ".md"
@@ -1040,8 +1047,8 @@ function M.execute(tool_name, arguments)
 		if not current_task or current_task == "" then
 			return { { type = "text", text = "Error: 'current_task' is required" } }, true
 		end
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
 		local status_dir = project_comm_dir("status")
@@ -1084,13 +1091,13 @@ function M.execute(tool_name, arguments)
 	-- list_agent_statuses
 	-- ----------------------------------------------------------------
 	elseif tool_name == "list_agent_statuses" then
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
 		local peers = list_peer_names()
 		if #peers == 0 then
-			return { { type = "text", text = "No other agents found in .nvim-agent/status/" } }, false
+			return { { type = "text", text = "No other agents found in this Neovim instance" } }, false
 		end
 
 		local lines = {}
@@ -1125,13 +1132,13 @@ function M.execute(tool_name, arguments)
 	-- list_agent_roles  (reads role field from each agent's status file)
 	-- ----------------------------------------------------------------
 	elseif tool_name == "list_agent_roles" then
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
 		local peers = list_peer_names()
 		if #peers == 0 then
-			return { { type = "text", text = "No other agents found in .nvim-agent/status/" } }, false
+			return { { type = "text", text = "No other agents found in this Neovim instance" } }, false
 		end
 
 		local lines = {}
@@ -1160,12 +1167,12 @@ function M.execute(tool_name, arguments)
 		if not summary or summary == "" then
 			return { { type = "text", text = "Error: 'summary' is required" } }, true
 		end
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set — cannot locate project history" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set — cannot locate history" } }, true
 		end
 
-		-- Write to .nvim-agent/history/<agent>.md inside the project directory
-		local hist_dir = CWD .. "/.nvim-agent/history"
+		-- Write to $RUNTIME_DIR/history/<agent>.md
+		local hist_dir = project_comm_dir("history")
 		os.execute("mkdir -p " .. hist_dir)
 		local hist_path = hist_dir .. "/" .. AGENT_NAME .. ".md"
 		local ok = append_history(hist_path, AGENT_NAME, summary)
@@ -1180,11 +1187,11 @@ function M.execute(tool_name, arguments)
 	-- read_agent_history
 	-- ----------------------------------------------------------------
 	elseif tool_name == "read_agent_history" then
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
-		local path = CWD .. "/.nvim-agent/history/" .. AGENT_NAME .. ".md"
+		local path = project_comm_dir("history") .. "/" .. AGENT_NAME .. ".md"
 		local content = read_file_contents(path)
 		if not content or content:match("^%s*$") then
 			return {
@@ -1198,11 +1205,11 @@ function M.execute(tool_name, arguments)
 	-- read_cwd_history  (reads all agents' history for this project)
 	-- ----------------------------------------------------------------
 	elseif tool_name == "read_cwd_history" then
-		if CWD == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_CWD not set" } }, true
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
 
-		local hist_dir = CWD .. "/.nvim-agent/history"
+		local hist_dir = project_comm_dir("history")
 		local handle = io.popen('ls "' .. hist_dir .. '"/*.md 2>/dev/null')
 		if not handle then
 			return { { type = "text", text = "No project history found" } }, false

@@ -2,9 +2,43 @@ local M = {}
 
 local config = require("nvim-agent.config")
 
---- Unique ID for this Neovim process.
---- Using the OS process ID guarantees no two simultaneously-running Neovim
---- windows share the same window_id, so their session directories never collide.
+--- Generate a random v4 UUID. Prefers libuv's CSPRNG; falls back to
+--- math.random seeded from the clock + pid if uv.random is unavailable.
+local function generate_uuid()
+	local bytes
+	local ok, raw = pcall(function()
+		return vim.loop.random(16)
+	end)
+	if ok and type(raw) == "string" and #raw == 16 then
+		bytes = { raw:byte(1, 16) }
+	else
+		math.randomseed(os.time() + (vim.loop.hrtime() % 1000000) + vim.fn.getpid())
+		bytes = {}
+		for i = 1, 16 do
+			bytes[i] = math.random(0, 255)
+		end
+	end
+	bytes[7] = bit.bor(bit.band(bytes[7], 0x0f), 0x40) -- version 4
+	bytes[9] = bit.bor(bit.band(bytes[9], 0x3f), 0x80) -- RFC 4122 variant
+	local unpack_fn = table.unpack or unpack
+	return string.format(
+		"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		unpack_fn(bytes)
+	)
+end
+
+--- Unique ID for this Neovim instance, minted once when nvim-agent loads.
+--- Every per-instance path derives from it: the session tree under
+--- <base_dir>/sessions/<instance_id>/ and the project runtime tree under
+--- <cwd>/.nvim-agent/instances/<instance_id>/. It is forwarded to the agent
+--- CLI and MCP server as NVIM_AGENT_INSTANCE_ID / NVIM_AGENT_RUNTIME_DIR so
+--- two Neovim instances open on the same project never share peer state.
+--- A UUID rather than the PID so ids stay unique across reboots / PID reuse
+--- and stale dirs remain attributable to one specific launch.
+M.instance_id = generate_uuid()
+
+--- Owning OS process id. Kept for diagnostics and adapter visibility only;
+--- no path is derived from it.
 M.window_id = vim.fn.getpid()
 
 M.sessions = {} -- keyed by compound string id, e.g. "485293847_main"
@@ -15,7 +49,7 @@ local next_instance = 1 -- sequential counter (used for display ordering only)
 --- Path to the process-level shared directory for this Neovim instance.
 --- All sessions within the same process share this directory (ephemeral.json lives here).
 local function process_dir_path()
-	return config.get().base_dir .. "/sessions/" .. M.window_id
+	return config.get().base_dir .. "/sessions/" .. M.instance_id
 end
 
 --- Return the process-level shared directory path.
@@ -57,8 +91,8 @@ function M.create(flavor, checkpoint, name)
 	local instance_num = next_instance
 	next_instance = next_instance + 1
 
-	-- Compound ID uses name for uniqueness: <window_id>_<name>
-	local id = M.window_id .. "_" .. name
+	-- Compound ID uses name for uniqueness: <instance_id>_<name>
+	local id = M.instance_id .. "_" .. name
 	local pdir = process_dir_path()
 	local dir = pdir .. "/" .. name
 	local active_dir = dir .. "/active"
@@ -68,7 +102,8 @@ function M.create(flavor, checkpoint, name)
 		id = id, -- compound string, used as table key
 		instance_num = instance_num, -- sequential int for display ordering only
 		name = name, -- user-visible identifier; used as dir name
-		window_id = M.window_id, -- which Neovim process owns this session
+		instance_id = M.instance_id, -- which Neovim instance owns this session
+		window_id = M.window_id, -- owning process id (diagnostics only)
 		process_dir = pdir, -- shared process-level dir (ephemeral.json lives here)
 		flavor = flavor or "agent",
 		checkpoint = checkpoint,
@@ -158,11 +193,12 @@ function M.close(id)
 	-- We always check, regardless of whether the workspace dir still exists:
 	-- terminal.lua writes the status file unconditionally, so leaking it after
 	-- close would leave a phantom agent visible to any peer that still sees the
-	-- runtime dir.
+	-- runtime dir. Scoped to THIS instance's runtime dir, so closing "main"
+	-- here never touches a same-named session in another Neovim.
 	if sess then
 		local workspace_mod = require("nvim-agent.workspace")
 		local cwd = vim.fn.getcwd()
-		local status_file = workspace_mod.runtime_dir(cwd) .. "/status/" .. sess.name .. ".json"
+		local status_file = workspace_mod.instance_runtime_dir(cwd) .. "/status/" .. sess.name .. ".json"
 		if vim.fn.filereadable(status_file) == 1 then
 			vim.fn.delete(status_file)
 		end

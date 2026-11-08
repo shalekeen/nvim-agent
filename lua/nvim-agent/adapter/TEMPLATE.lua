@@ -119,6 +119,10 @@ function M:setup_session_mcp(session)
 					NVIM_AGENT_ACTIVE_DIR = session.active_dir,
 					NVIM_AGENT_PROCESS_DIR = session.process_dir,
 					NVIM_AGENT_CWD = vim.fn.getcwd(),
+					-- Per-instance peer state root. Forward it verbatim so the
+					-- MCP server and hook never fall back to a shared location.
+					NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
+					NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd()),
 				},
 			},
 		},
@@ -164,6 +168,7 @@ local function hook_script_content()
 ACTIVE_DIR="${NVIM_AGENT_ACTIVE_DIR}"
 PROCESS_DIR="${NVIM_AGENT_PROCESS_DIR}"
 CWD="${NVIM_AGENT_CWD}"
+RUNTIME_DIR="${NVIM_AGENT_RUNTIME_DIR}"   # this Neovim instance's peer state
 if [ -z "$ACTIVE_DIR" ]; then
     exit 0
 fi
@@ -181,9 +186,9 @@ for f in .flavor_meta.json persistent_dirs.json user_notes.md; do
     [ -f "$ACTIVE_DIR/$f" ] && { echo "--- $f ---"; cat "$ACTIVE_DIR/$f"; echo; }
 done
 
-# Project-scoped (workspace mode): peer statuses + message mailbox
-if [ -n "$CWD" ] && [ -n "$SESSION_NAME" ]; then
-    PROJ_DIR="$CWD/.nvim-agent"
+# Instance-scoped (workspace mode): peer statuses + message mailbox
+if [ -n "$RUNTIME_DIR" ] && [ -n "$SESSION_NAME" ]; then
+    PROJ_DIR="$RUNTIME_DIR"
     MSG_FILE="$PROJ_DIR/messages/$SESSION_NAME.md"
     [ -s "$MSG_FILE" ] && { echo "--- messages_for_you.md ---"; cat "$MSG_FILE"; echo; }
 fi

@@ -18,10 +18,16 @@ end
 
 -- Set up a sandbox with a fake project cwd and a fake active dir matching the
 -- structure mcp/tools.lua's AGENT_NAME parser expects:
---   .../sessions/<pid>/<agent_name>/active
+--   .../sessions/<instance_id>/<agent_name>/active
 local sandbox = vim.fn.tempname()
 local cwd = sandbox .. "/project"
-local sessions_dir = sandbox .. "/sessions/12345"
+local instance_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+local sessions_dir = sandbox .. "/sessions/" .. instance_id
+-- Peer-state root for THIS Neovim instance — what the parent Neovim exports
+-- as NVIM_AGENT_RUNTIME_DIR. tools.lua must never touch anything outside it.
+local runtime_dir = cwd .. "/.nvim-agent/instances/" .. instance_id
+-- A second Neovim instance on the same project; must be invisible.
+local other_runtime_dir = cwd .. "/.nvim-agent/instances/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 local agent_name = "Alice"
 local active_dir = sessions_dir .. "/" .. agent_name .. "/active"
 vim.fn.mkdir(cwd, "p")
@@ -35,7 +41,7 @@ role_file:close()
 -- Env vars must be set BEFORE requiring tools.lua — the module captures them
 -- at load time into local upvalues.
 vim.env.NVIM_AGENT_ACTIVE_DIR = active_dir
-vim.env.NVIM_AGENT_CWD = cwd
+vim.env.NVIM_AGENT_RUNTIME_DIR = runtime_dir
 -- Stale value from previous tests in the same nvim process won't bite us
 -- because we set them explicitly here.
 
@@ -92,7 +98,7 @@ end
 local _, err = run("update_status", { current_task = "implementing feature X" })
 check("update_status returns no error", not err)
 
-local status_path = cwd .. "/.nvim-agent/status/Alice.json"
+local status_path = runtime_dir .. "/status/Alice.json"
 local status_raw = read(status_path)
 check("status file written", status_raw ~= nil)
 check("status JSON includes current_task", status_raw and status_raw:find('"current_task":"implementing feature X"') ~= nil)
@@ -107,35 +113,50 @@ check("no .tmp file lingers (atomic write)", read(status_path .. ".tmp") == nil)
 -- ---------------------------------------------------------------------------
 
 -- First create a peer "Bob" so list_peer_names sees them.
-local bob_status = io.open(cwd .. "/.nvim-agent/status/Bob.json", "w")
+local bob_status = io.open(runtime_dir .. "/status/Bob.json", "w")
 bob_status:write('{"agent":"Bob","role":"reviewer","current_task":"idle","updated_at":"2026-01-01T00:00:00Z"}')
 bob_status:close()
 
 local _, err2 = run("send_message", { to = "Bob", content = "please review my changes" })
 check("send_message to peer returns no error (rpc failure is non-fatal)", not err2)
 
-local bob_mailbox = cwd .. "/.nvim-agent/messages/Bob.md"
+local bob_mailbox = runtime_dir .. "/messages/Bob.md"
 local bob_msg = read(bob_mailbox)
 check("Bob's mailbox file created", bob_msg ~= nil)
 check("mailbox contains 'From: Alice'", bob_msg and bob_msg:find("From: Alice") ~= nil)
 check("mailbox contains the message body", bob_msg and bob_msg:find("please review my changes") ~= nil)
-check("trigger file written for Bob", read(cwd .. "/.nvim-agent/triggers/Bob.md") ~= nil)
+check("trigger file written for Bob", read(runtime_dir .. "/triggers/Bob.md") ~= nil)
 
 -- ---------------------------------------------------------------------------
 -- 3. send_message with to="all" broadcasts to every peer (excludes self).
 -- ---------------------------------------------------------------------------
 
 -- Add a third peer so we can verify "all" hits multiple recipients.
-local carol_status = io.open(cwd .. "/.nvim-agent/status/Carol.json", "w")
+local carol_status = io.open(runtime_dir .. "/status/Carol.json", "w")
 carol_status:write('{"agent":"Carol","role":"qa","current_task":"writing tests","updated_at":"2026-01-01T00:00:00Z"}')
 carol_status:close()
+
+-- Plant a peer in ANOTHER Neovim instance's runtime dir and in the legacy
+-- shared project-level location. Neither may ever be discovered.
+vim.fn.mkdir(other_runtime_dir .. "/status", "p")
+local mallory_status = io.open(other_runtime_dir .. "/status/Mallory.json", "w")
+mallory_status:write('{"agent":"Mallory","role":"intruder","current_task":"lurking","updated_at":"2026-01-01T00:00:00Z"}')
+mallory_status:close()
+vim.fn.mkdir(cwd .. "/.nvim-agent/status", "p")
+local legacy_status = io.open(cwd .. "/.nvim-agent/status/Legacy.json", "w")
+legacy_status:write('{"agent":"Legacy","role":"ghost","current_task":"haunting","updated_at":"2026-01-01T00:00:00Z"}')
+legacy_status:close()
 
 local broadcast_text, _ = run("send_message", { to = "all", content = "ping" })
 check("broadcast text mentions Bob", broadcast_text:find("Bob") ~= nil)
 check("broadcast text mentions Carol", broadcast_text:find("Carol") ~= nil)
 check("broadcast text excludes self (Alice)", not broadcast_text:find("Alice"))
+check("broadcast excludes peer from another Neovim instance", not broadcast_text:find("Mallory"))
+check("broadcast excludes legacy project-level peer", not broadcast_text:find("Legacy"))
+check("no mailbox created in the other instance's tree", read(other_runtime_dir .. "/messages/Mallory.md") == nil)
+check("no mailbox created at the legacy project level", read(cwd .. "/.nvim-agent/messages/Legacy.md") == nil)
 
-local carol_msg = read(cwd .. "/.nvim-agent/messages/Carol.md")
+local carol_msg = read(runtime_dir .. "/messages/Carol.md")
 check("Carol received the broadcast", carol_msg ~= nil and carol_msg:find("ping") ~= nil)
 
 -- ---------------------------------------------------------------------------
@@ -148,7 +169,7 @@ vim.fn.mkdir(sender_active, "p")
 -- Switch the captured AGENT_NAME / ACTIVE_DIR by re-loading tools.lua under
 -- Bob's identity. This isn't a thing tools.lua supports cleanly (env is read
 -- at load), so simulate by writing directly to Alice's mailbox.
-local alice_mailbox = cwd .. "/.nvim-agent/messages/Alice.md"
+local alice_mailbox = runtime_dir .. "/messages/Alice.md"
 local fw = io.open(alice_mailbox, "w")
 fw:write("\n---\n**From: Bob** | 2026-01-01 00:00:00\n\nLGTM\n")
 fw:close()
@@ -174,10 +195,14 @@ local statuses, _ = run("list_agent_statuses", {})
 check("list_agent_statuses includes Bob", statuses:find("Bob") ~= nil)
 check("list_agent_statuses includes Carol", statuses:find("Carol") ~= nil)
 check("list_agent_statuses excludes self", not statuses:find("Agent: Alice"))
+check("list_agent_statuses excludes other-instance peer", not statuses:find("Mallory"))
+check("list_agent_statuses excludes legacy project-level peer", not statuses:find("Legacy"))
 
 local roles, _ = run("list_agent_roles", {})
 check("list_agent_roles shows Bob's role", roles:find("reviewer") ~= nil)
 check("list_agent_roles shows Carol's role", roles:find("qa") ~= nil)
+check("list_agent_roles excludes other-instance peer", not roles:find("intruder"))
+check("list_agent_roles excludes legacy project-level peer", not roles:find("ghost"))
 
 -- ---------------------------------------------------------------------------
 -- 6. log_work + read_agent_history round-trip.
@@ -193,8 +218,8 @@ check("history is per-agent (Alice's file)", history:find("implemented foo") ~= 
 
 -- read_cwd_history returns history for all agents in the project.
 -- Add a Bob history entry directly so we can verify aggregation.
-vim.fn.mkdir(cwd .. "/.nvim-agent/history", "p")
-local bob_hist = io.open(cwd .. "/.nvim-agent/history/Bob.md", "w")
+vim.fn.mkdir(runtime_dir .. "/history", "p")
+local bob_hist = io.open(runtime_dir .. "/history/Bob.md", "w")
 bob_hist:write("\n---\n**[2026-01-01 00:00] Agent: Bob**\n\nreviewed PR\n")
 bob_hist:close()
 
@@ -230,7 +255,7 @@ check("last message content intact", stuffed:find("msg #50") ~= nil)
 
 vim.fn.delete(sandbox, "rf")
 vim.env.NVIM_AGENT_ACTIVE_DIR = nil
-vim.env.NVIM_AGENT_CWD = nil
+vim.env.NVIM_AGENT_RUNTIME_DIR = nil
 
 print(string.format("\n%d/%d checks passed", total - fail_count, total))
 if fail_count > 0 then

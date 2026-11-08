@@ -123,9 +123,11 @@ When the plugin spawns either the agent CLI (e.g. `claude`) or its MCP server, i
 
 | Var | Agent process | MCP server | Value |
 | --- | :---: | :---: | --- |
-| `NVIM_AGENT_ACTIVE_DIR` | ✓ | ✓ | `~/.nvim-agent/sessions/<pid>/<name>/active/` — this session's flavor files |
-| `NVIM_AGENT_PROCESS_DIR` | ✓ | ✓ | `~/.nvim-agent/sessions/<pid>/` — shared per-Neovim state |
+| `NVIM_AGENT_ACTIVE_DIR` | ✓ | ✓ | `~/.nvim-agent/sessions/<instance-id>/<name>/active/` — this session's flavor files |
+| `NVIM_AGENT_PROCESS_DIR` | ✓ | ✓ | `~/.nvim-agent/sessions/<instance-id>/` — shared per-Neovim state |
 | `NVIM_AGENT_CWD` | ✓ | ✓ | `vim.fn.getcwd()` at session start |
+| `NVIM_AGENT_INSTANCE_ID` | ✓ | ✓ | UUID minted once per Neovim process when nvim-agent loads |
+| `NVIM_AGENT_RUNTIME_DIR` | ✓ | ✓ | `<cwd>/.nvim-agent/instances/<instance-id>/` — this Neovim instance's peer state (status, messages, history, triggers) |
 | `NVIM_AGENT_BASE_DIR` | ✓ | ✓ | The configured `base_dir` (defaults to `~/.nvim-agent`) |
 | `NVIM_AGENT_NVIM_ADDR` | – | ✓ | `vim.v.servername` — used by the MCP server to RPC into the parent Neovim |
 
@@ -138,7 +140,7 @@ The `claude_code` adapter writes a small shell script to `~/.nvim-agent/hooks/cl
 - `~/.claude/settings.json` — global default
 - `<session.dir>/mcp-settings.json` — per-session override (Claude Code is launched with `--mcp-config` pointing at this file)
 
-Claude Code runs the hook before every prompt and prepends the hook's stdout to the user's message as additional context. The script reads files relative to `$NVIM_AGENT_ACTIVE_DIR`, `$NVIM_AGENT_PROCESS_DIR`, and `$NVIM_AGENT_CWD`.
+Claude Code runs the hook before every prompt and prepends the hook's stdout to the user's message as additional context. The script reads files relative to `$NVIM_AGENT_ACTIVE_DIR`, `$NVIM_AGENT_PROCESS_DIR`, `$NVIM_AGENT_CWD`, and `$NVIM_AGENT_RUNTIME_DIR`.
 
 ### What the hook injects on each prompt
 
@@ -151,10 +153,12 @@ Claude Code runs the hook before every prompt and prepends the hook's stdout to 
 - **Process-shared** (from `$NVIM_AGENT_PROCESS_DIR`):
   - `ephemeral.json` — open buffers, cursor, git status, diagnostics, quickfix
   - `tmux_captures.json` — captured tmux pane content (if any)
-- **Project-local** (from `$NVIM_AGENT_CWD/.nvim-agent/`):
+- **Instance-local** (from `$NVIM_AGENT_RUNTIME_DIR`):
   - Pending messages addressed to this session
-  - Status + role summary of all peer agents
-  - Last 40 lines of this agent's persistent history log
+  - Status + role summary of all peer agents hosted by the same Neovim
+  - Last 40 lines of this agent's history log for this Neovim instance
+
+Peer state is deliberately keyed by Neovim instance, not by project directory. Two Neovim windows open on the same repo each mint their own instance id at startup and get their own `instances/<instance-id>/` subtree, so their agents never see each other's statuses, mailboxes, history, or wakeup triggers. If `$NVIM_AGENT_RUNTIME_DIR` is missing the hook and MCP tools fail closed rather than falling back to a shared location.
 
 Other adapters can opt into the same flow by emitting a hook script and registering it however the target CLI expects.
 
@@ -180,7 +184,7 @@ Run once per project:
 You'll be prompted for a directory name (default: `.nvim-workspace`). The plugin creates two trees:
 
 - `<cwd>/<def_dir>/` — checked into git. Holds agent definitions and workspace manifests.
-- `<cwd>/.nvim-agent/` — gitignored. Holds runtime state (peer discovery, messages, history, triggers).
+- `<cwd>/.nvim-agent/` — gitignored. Holds `config.json` plus one `instances/<instance-id>/` subtree per running Neovim with that instance's runtime state (peer discovery, messages, history, triggers).
 
 The choice of `<def_dir>` is recorded in `<cwd>/.nvim-agent/config.json` so the plugin can find it on later launches.
 
@@ -243,7 +247,7 @@ A project can hold any number of workspaces — different `<name>.json` files fo
 When `auto_open` is enabled or you run `:NvimAgent` manually, the picker offers one entry per workspace it finds in the current project, plus the standalone fallback. Picking a workspace runs `workspace_launch` (`init.lua:550`):
 
 1. Writes project permissions for the active adapter (so agents don't get permission-prompted on every read/write).
-2. Initializes the runtime dir at `<cwd>/.nvim-agent/`.
+2. Initializes this instance's runtime dir at `<cwd>/.nvim-agent/instances/<instance-id>/`.
 3. For each agent in the manifest, in order:
    - Creates a session with the agent's name.
    - Loads the agent's content into the session's `active/` dir: template files first (if linked), then any agent-specific overrides on top.
@@ -254,7 +258,7 @@ Sessions are processed sequentially so that flavor pickers don't overlap.
 
 ### Roles and peer discovery
 
-The hook script (see "How context reaches the agent" above) reads `<cwd>/.nvim-agent/status/*.json` and `<cwd>/.nvim-agent/messages/<agent>.md` before every prompt and feeds the result to the agent. Each agent's role description from `role.md` is included in the peer summary, so a multi-agent workspace inherently tells every agent who else is around and what they're doing. The `send_message`, `update_status`, and `read_messages` MCP tools are how agents talk to each other — see `lua/nvim-agent/mcp/tools.lua` for the full multi-agent tool surface.
+The hook script (see "How context reaches the agent" above) reads `$NVIM_AGENT_RUNTIME_DIR/status/*.json` and `$NVIM_AGENT_RUNTIME_DIR/messages/<agent>.md` before every prompt and feeds the result to the agent. Discovery is scoped to the Neovim instance: agents launched from a second Neovim window on the same project are not peers. Each agent's role description from `role.md` is included in the peer summary, so a multi-agent workspace inherently tells every agent who else is around and what they're doing. The `send_message`, `update_status`, and `read_messages` MCP tools are how agents talk to each other — see `lua/nvim-agent/mcp/tools.lua` for the full multi-agent tool surface.
 
 ### Project permissions
 
@@ -288,7 +292,7 @@ Templates let you write a system prompt + user notes once and reuse them across 
 
 - One global copy of the template at `~/.nvim-agent/agent_templates/Senior SWE/` (no duplication).
 - Two tiny `.agent_meta.json` files in `<def_dir>/agents/Senior SWE 1/` and `<def_dir>/agents/Senior SWE 2/` — that's the entire on-disk overhead per linked agent (plus any agent-specific overrides you choose to add).
-- At runtime, two ephemeral copies live under `~/.nvim-agent/sessions/<pid>/Senior SWE 1/active/` and `…/Senior SWE 2/active/`. These are the working copies the hook script feeds to each agent via `$NVIM_AGENT_ACTIVE_DIR`. They die with the Neovim process.
+- At runtime, two ephemeral copies live under `~/.nvim-agent/sessions/<instance-id>/Senior SWE 1/active/` and `…/Senior SWE 2/active/`. These are the working copies the hook script feeds to each agent via `$NVIM_AGENT_ACTIVE_DIR`. They die with the Neovim process.
 
 **Propagation:** editing the template's `system_prompt.md` propagates to both agents on their **next** session launch. Live sessions keep their already-copied files until restart. Editing per-agent overrides only affects that agent.
 
@@ -300,7 +304,7 @@ There are three roots, each with a different lifetime and ownership.
 
 ```
 ~/.nvim-agent/
-├── sessions/<pid>/                    # one process dir per running Neovim (ephemeral)
+├── sessions/<instance-id>/            # one dir per running Neovim, keyed by its startup UUID (ephemeral)
 │   ├── ephemeral.json                 # editor state, shared by all sessions in this nvim
 │   ├── tmux_captures.json             # captured tmux panes, shared
 │   └── <session_name>/
@@ -330,7 +334,7 @@ There are three roots, each with a different lifetime and ownership.
 
 Flavors live as top-level directories under `~/.nvim-agent/`, alongside the `sessions/`, `hooks/`, and `agent_templates/` metadata dirs. The names `active`, `sessions`, `hooks`, and `agent_templates` are reserved and cannot be used as flavor names.
 
-`sessions/<pid>/` is ephemeral — entries die with the Neovim process. Everything else persists across restarts.
+`sessions/<instance-id>/` is ephemeral — entries die with the Neovim process. Everything else persists across restarts.
 
 ### 2. Project-local runtime — `<cwd>/.nvim-agent/` (gitignored)
 
@@ -338,12 +342,15 @@ Created on demand when a workspace is initialised or when peer-agent messaging f
 
 ```
 <cwd>/.nvim-agent/
-├── config.json                        # { "workspace_def_dir": "<rel-path>" }
-├── status/<agent>.json                # peer discovery: each running agent advertises here
-├── messages/<agent>.md                # mailboxes for inter-agent send_message()
-├── history/<agent>.md                 # persistent per-agent work logs
-└── triggers/<agent>                   # wakeup signals (touch a file → agent resumes)
+├── config.json                        # { "workspace_def_dir": "<rel-path>" } — project-level
+└── instances/<instance-id>/           # one subtree per running Neovim (UUID minted at setup)
+    ├── status/<agent>.json            # peer discovery: each running agent advertises here
+    ├── messages/<agent>.md            # mailboxes for inter-agent send_message()
+    ├── history/<agent>.md             # per-agent work logs for this instance
+    └── triggers/<agent>.md            # wakeup signals (touch a file → agent resumes)
 ```
+
+Each Neovim instance gets its own `instances/<instance-id>/` subtree, exported to its agents as `$NVIM_AGENT_RUNTIME_DIR`. That is what keeps two Neovim windows on the same project from leaking context into each other. Subtrees are not deleted on exit; `:NvimAgent history project` stitches history from every instance back together for you, while agents themselves only ever see their own instance's history.
 
 ### 3. Workspace definitions — `<cwd>/<def_dir>/` (project workspaces only, checked into git)
 

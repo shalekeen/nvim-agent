@@ -31,9 +31,10 @@ M.defaults = {
 You are working inside Neovim via the nvim-agent plugin.
 
 Context is split across three directories:
-- Session dir  ($NVIM_AGENT_ACTIVE_DIR):  ~/.nvim-agent/sessions/<pid>/<name>/active/
-- Process dir  ($NVIM_AGENT_PROCESS_DIR): ~/.nvim-agent/sessions/<pid>/
-- Project dir  ($NVIM_AGENT_CWD/.nvim-agent/): project-local data (persists across restarts)
+- Session dir  ($NVIM_AGENT_ACTIVE_DIR):  ~/.nvim-agent/sessions/<instance-id>/<name>/active/
+- Process dir  ($NVIM_AGENT_PROCESS_DIR): ~/.nvim-agent/sessions/<instance-id>/
+- Runtime dir  ($NVIM_AGENT_RUNTIME_DIR): $NVIM_AGENT_CWD/.nvim-agent/instances/<instance-id>/
+                                          peer state for THIS Neovim instance only
 
 A UserPromptSubmit hook automatically injects these context files before each prompt:
 - .flavor_meta.json           -- (session dir) Your active flavor and checkpoint
@@ -43,12 +44,14 @@ A UserPromptSubmit hook automatically injects these context files before each pr
 - PROJECT.md                  -- (project root) Project vision, architecture, and conventions (if present)
 - ephemeral.json              -- (process dir) Current editor state, SHARED by all agents
 - tmux_captures.json          -- (process dir) Captured tmux pane content, SHARED by all agents
-- messages_for_you.md         -- (project dir) Pending messages from peer agents (if any)
-- peer_agents                 -- (project dir) Role + status of each other active agent (if any)
-- agent_history.md            -- (project dir) Last 40 lines of YOUR work history (if any)
+- messages_for_you.md         -- (runtime dir) Pending messages from peer agents (if any)
+- peer_agents                 -- (runtime dir) Role + status of each other active agent (if any)
+- agent_history.md            -- (runtime dir) Last 40 lines of YOUR work history (if any)
 
 ephemeral.json is refreshed every time the user switches to any agent terminal buffer.
-Project-dir files persist across Neovim restarts.
+Runtime-dir files are scoped to this Neovim instance: your peers are exactly the other
+agents hosted by the same Neovim. Agents in other Neovim instances, even on the same
+project, are invisible to you and you to them.
 
 ## CRITICAL: File Operations MUST Use MCP Tools
 
@@ -164,11 +167,12 @@ whether a task should be delegated to a more appropriate peer.
 
 ## Work History Tools
 
-History is written to disk and persists across Neovim restarts. The hook injects a
-recent excerpt before each prompt so you always have context on past work.
+History is written to disk under the runtime dir and survives for as long as this
+Neovim instance's runtime dir does. The hook injects a recent excerpt before each
+prompt so you always have context on past work.
 
 ### log_work(summary)
-Append a timestamped entry to your work history file (.nvim-agent/history/<name>.md).
+Append a timestamped entry to your work history file ($NVIM_AGENT_RUNTIME_DIR/history/<name>.md).
 This file is included in the output of read_cwd_history so all peers can see what you did.
 Call this after completing a meaningful unit of work: implementing a feature, fixing a
 bug, completing a research spike, etc. Be specific -- future-you and peer agents will
@@ -178,7 +182,7 @@ rely on these entries to understand what was done and avoid duplicate work.
 Read your complete personal work history for this project.
 
 ### read_cwd_history()
-Read the full shared history of all work done in the current directory by any agent.
+Read the full shared history of all work done by any agent in this Neovim instance.
 Use this when starting a new session to understand what has already been accomplished.
 
 ### spawn_agent(name, system_prompt, role, user_notes)

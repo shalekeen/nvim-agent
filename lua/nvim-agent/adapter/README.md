@@ -50,8 +50,9 @@ same session table. Fields you can rely on:
 | `session.id` | `string` | Compound ID `"<pid>_<name>"`. Unique across all running Neovims. |
 | `session.name` | `string` | User-facing name. `"main"` for the first session, user-supplied for subsequent ones. |
 | `session.instance_num` | `number` | Sequential 1-indexed creation order. Used for buffer naming. |
-| `session.window_id` | `number` | Owning Neovim's PID. |
-| `session.process_dir` | `string` | `~/.nvim-agent/sessions/<pid>/`. Shared by all sessions in this Neovim. Holds `ephemeral.json`. |
+| `session.instance_id` | `string` | UUID of the owning Neovim instance, minted once when nvim-agent loads. Also at `require("nvim-agent.session").instance_id`. |
+| `session.window_id` | `number` | Owning Neovim's PID (diagnostics only; no path derives from it). |
+| `session.process_dir` | `string` | `~/.nvim-agent/sessions/<instance-id>/`. Shared by all sessions in this Neovim. Holds `ephemeral.json`. |
 | `session.dir` | `string` | `<process_dir>/<name>/`. Per-session root. Good place for `mcp-settings.json` and any other per-session config. |
 | `session.active_dir` | `string` | `<dir>/active/`. Holds the session's context files (`system_prompt.md`, `user_notes.md`, `role.md`, `.flavor_meta.json`, etc.). **This is the path you point your CLI at.** |
 | `session.flavor` | `string` | The flavor name this session was launched with. |
@@ -130,7 +131,7 @@ agent via MCP tools) does.
 | `ephemeral.json` | High | Refreshed on every `BufEnter`: cursor, open buffers, recent diagnostics, git status. |
 | `tmux_captures.json` | Low | Tmux pane snapshots, manually captured. |
 
-### Files in `<cwd>/.nvim-agent/` (project-local, shared with peer agents)
+### Files in `$NVIM_AGENT_RUNTIME_DIR` (`<cwd>/.nvim-agent/instances/<instance-id>/`, shared only with peers in the same Neovim instance)
 
 | File | Description |
 |---|---|
@@ -165,7 +166,12 @@ If your CLI **supports MCP** (Claude Code does):
    - `NVIM_AGENT_ACTIVE_DIR = session.active_dir` (so the MCP server
      serves files from the right session)
    - `NVIM_AGENT_PROCESS_DIR = session.process_dir` (for ephemeral.json)
-   - `NVIM_AGENT_CWD = vim.fn.getcwd()` (for project-local state)
+   - `NVIM_AGENT_CWD = vim.fn.getcwd()` (project root, e.g. for PROJECT.md)
+   - `NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id`
+   - `NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd())`
+     (this instance's peer-state root — **required** by every messaging /
+     status / history tool; there is no fallback, so an adapter that forgets
+     it gets loud errors rather than silent cross-instance leakage)
 
 Example settings shape (Claude Code format):
 
@@ -180,6 +186,8 @@ Example settings shape (Claude Code format):
                 NVIM_AGENT_ACTIVE_DIR = session.active_dir,
                 NVIM_AGENT_PROCESS_DIR = session.process_dir,
                 NVIM_AGENT_CWD = vim.fn.getcwd(),
+                NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
+                NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd()),
             },
         },
     },
@@ -279,7 +287,7 @@ Copy `TEMPLATE.lua` to `<your_cli>.lua` and work through this:
   - [ ] Nil-guards `session` and returns a safe default
 - [ ] `setup_session_mcp(session)` writes per-session config (if MCP-capable)
   - [ ] MCP server entry uses `vim.v.progpath -l <server.lua>`
-  - [ ] Env vars include `NVIM_AGENT_NVIM_ADDR`, `NVIM_AGENT_ACTIVE_DIR`, `NVIM_AGENT_PROCESS_DIR`, `NVIM_AGENT_CWD`
+  - [ ] Env vars include `NVIM_AGENT_NVIM_ADDR`, `NVIM_AGENT_ACTIVE_DIR`, `NVIM_AGENT_PROCESS_DIR`, `NVIM_AGENT_CWD`, `NVIM_AGENT_INSTANCE_ID`, `NVIM_AGENT_RUNTIME_DIR`
   - [ ] Pre-allows `mcp__nvim-agent__*` so the agent doesn't get prompted per-tool
   - [ ] Registers the pre-prompt hook (if your CLI supports them)
 - [ ] `setup()` is idempotent — writing the same settings twice doesn't corrupt them
@@ -304,7 +312,7 @@ CLI has its own setup-validation needs). Smoke-test by hand:
 :NvimAgent session new
 
 " In a separate shell, verify the per-session settings were written:
-:!cat ~/.nvim-agent/sessions/$NEOVIM_PID/main/mcp-settings.json
+:!cat ~/.nvim-agent/sessions/<instance-id>/main/mcp-settings.json
 ```
 
 If your adapter writes hook scripts or CLI settings, add unit tests that
