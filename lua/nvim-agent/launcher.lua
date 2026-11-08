@@ -118,7 +118,7 @@ end
 --- open a terminal.
 --- @return table|nil sess
 local function create_session_for_entry(manifest, entry, cwd)
-	local sess, err = session_mod().create(entry.name, entry.agent)
+	local sess, err = session_mod().create(entry.name, entry.agent, cwd)
 	if not sess then
 		notify("failed to create session '" .. entry.name .. "': " .. (err or "?"), vim.log.levels.ERROR)
 		return nil
@@ -138,6 +138,14 @@ end
 --- Reload a session's active_dir from its agent + this workspace's
 --- overrides. Used after overrides are cleared. Returns the files applied.
 local function reload_session_files(manifest, sess, cwd)
+	-- Clear first: agent.load only copies files the global agent HAS, so a
+	-- file that existed only as an override would otherwise survive a reset.
+	for _, f in ipairs(agent_mod().AGENT_FILES) do
+		local path = sess.active_dir .. "/" .. f
+		if vim.fn.filereadable(path) == 1 then
+			vim.fn.delete(path)
+		end
+	end
 	agent_mod().load(sess.agent, sess.active_dir)
 	return workspace_mod().apply_overrides(manifest.name, sess.name, sess.active_dir, cwd)
 end
@@ -169,7 +177,7 @@ function M.launch(manifest, cwd)
 	end
 
 	ws.init_runtime(cwd)
-	ws.set_current(manifest)
+	ws.set_current(manifest, cwd)
 
 	local created = {}
 	for _, entry in ipairs(manifest.agents or {}) do
@@ -709,7 +717,7 @@ end
 --- @param session_name string|nil default: agent name (prompted on collision)
 --- @param cwd string|nil
 function M.add_agent(agent_name, session_name, cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local m = require_live_workspace()
 	if not m then
 		return
@@ -767,7 +775,7 @@ end
 --- @param name string|nil  session name; nil → picker
 --- @param cwd string|nil
 function M.remove_agent(name, cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local m = require_live_workspace()
 	if not m then
 		return
@@ -817,7 +825,7 @@ end
 --- @param name string|nil  session name; nil → picker over non-running members
 --- @param cwd string|nil
 function M.restart_agent(name, cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local m = require_live_workspace()
 	if not m then
 		return
@@ -950,7 +958,7 @@ end
 --- @param name string|nil
 --- @param cwd string|nil
 function M.delete_agent(name, cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local am = agent_mod()
 	local ws = workspace_mod()
 	local function do_delete(n)
@@ -1024,12 +1032,13 @@ function M.sync_session_file(sess, file, silent)
 	if not sess or not m then
 		return false
 	end
-	local ok, err = workspace_mod().copy_override_from(m.name, sess.name, file, sess.active_dir .. "/" .. file, vim.fn.getcwd())
+	local cwd = workspace_mod().cwd()
+	local ok, err = workspace_mod().copy_override_from(m.name, sess.name, file, sess.active_dir .. "/" .. file, cwd)
 	if not ok then
 		notify("could not save override for '" .. sess.name .. "': " .. tostring(err), vim.log.levels.WARN)
 		return false
 	end
-	sess.overrides = workspace_mod().list_overrides(m.name, sess.name, vim.fn.getcwd())
+	sess.overrides = workspace_mod().list_overrides(m.name, sess.name, cwd)
 	if not silent then
 		notify(string.format("%s saved as a '%s' override for '%s' (global agent '%s' untouched)", file, m.name, sess.name, sess.agent))
 	end
@@ -1040,7 +1049,7 @@ end
 --- drop this workspace's overrides for it (they would be identical).
 --- @param name string|nil  session name; nil → picker
 function M.push_agent(name, cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local m = require_live_workspace()
 	if not m then
 		return
@@ -1073,10 +1082,13 @@ end
 --- @param name string|nil  session name; nil → picker
 --- @param file string|nil  one file, or nil for all
 function M.reset_overrides(name, file, cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local m = require_live_workspace()
 	if not m then
 		return
+	end
+	if file and not vim.tbl_contains(agent_mod().AGENT_FILES, file) then
+		return notify("'" .. file .. "' is not an agent definition file (" .. table.concat(agent_mod().AGENT_FILES, ", ") .. ")", vim.log.levels.ERROR)
 	end
 	local ws = workspace_mod()
 	local function do_reset(sess)
@@ -1108,7 +1120,7 @@ end
 
 --- Show which files each member overrides in the live workspace.
 function M.show_overrides_ui(cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local m = require_live_workspace()
 	if not m then
 		return
@@ -1220,7 +1232,7 @@ end
 --- Floating overview of the live workspace: every member's state, role,
 --- current task from its status file, pending mailbox size, and overrides.
 function M.team_status(cwd)
-	cwd = cwd or vim.fn.getcwd()
+	cwd = cwd or workspace_mod().cwd()
 	local m = workspace_mod().get_current()
 	if not m then
 		return notify("no live workspace", vim.log.levels.WARN)
@@ -1358,8 +1370,8 @@ end
 ---      to the live workspace, launch it
 --- @return table  { success = boolean, error? = string, relaunched? = boolean }
 function M.spawn(name, system_prompt, role, user_notes)
-	local cwd = vim.fn.getcwd()
 	local ws = workspace_mod()
+	local cwd = ws.cwd()
 	local sm = session_mod()
 	local am = agent_mod()
 
@@ -1372,7 +1384,7 @@ function M.spawn(name, system_prompt, role, user_notes)
 	if not m then
 		m = ws.read(ws.EPHEMERAL, cwd) or ws.new_manifest(ws.EPHEMERAL)
 		ws.save(m, cwd)
-		ws.set_current(m)
+		ws.set_current(m, cwd)
 		ws.init_runtime(cwd)
 	end
 

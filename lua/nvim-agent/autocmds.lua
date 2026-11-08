@@ -128,15 +128,16 @@ function M.register()
 				return
 			end
 
-			local cwd = vim.fn.getcwd()
-			-- Scoped to this Neovim instance's runtime tree: a trigger written
-			-- for "main" in another instance must not wake our "main".
-			local instance_dir = require("nvim-agent.workspace").instance_runtime_dir(cwd)
-			local trigger_dir = instance_dir .. "/triggers"
-			local msg_dir = instance_dir .. "/messages"
 			local terminal = require("nvim-agent.terminal")
+			local ws = require("nvim-agent.workspace")
 
 			for _, sess in ipairs(session_mod.list()) do
+				-- Scoped to this Neovim instance's runtime tree for the project
+				-- the session was launched in (not the current :cd): a trigger
+				-- written for "main" in another instance must not wake ours.
+				local instance_dir = ws.instance_runtime_dir(sess.cwd or vim.fn.getcwd())
+				local trigger_dir = instance_dir .. "/triggers"
+				local msg_dir = instance_dir .. "/messages"
 				local bufnr = sess.bufnr
 				if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) or not sess.jobid then
 					M._session_ticks[sess.id] = nil
@@ -202,7 +203,7 @@ function M.register()
 				return
 			end
 
-			local msg_file = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd())
+			local msg_file = require("nvim-agent.workspace").instance_runtime_dir(sess.cwd or vim.fn.getcwd())
 				.. "/messages/"
 				.. sess.name
 				.. ".md"

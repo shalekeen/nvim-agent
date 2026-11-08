@@ -130,13 +130,8 @@ function M:get_cmd(session)
 	-- lua/nvim-agent/context/init.lua:compose_system_prompt.
 	local prompt = require("nvim-agent.context").compose_system_prompt(active_dir)
 
-	-- Determine MCP config: per-session file if session given, else global settings
-	local mcp_config
-	if session then
-		mcp_config = session.dir .. "/mcp-settings.json"
-	else
-		mcp_config = vim.fn.expand("~/.claude/settings.json")
-	end
+	-- Per-session MCP config written by setup_session_mcp.
+	local mcp_config = session.dir .. "/mcp-settings.json"
 
 	local cmd = {
 		"claude",
@@ -548,11 +543,6 @@ function M:setup()
 	-- per-session via --system-prompt and --mcp-config, so strip any legacy
 	-- copies left over from previous installs.
 	cleanup_legacy_global_config()
-end
-
-function M:on_enter(_)
-	-- Terminal cursor position syncs automatically when entering terminal mode (i)
-	-- No special handling needed in normal mode
 end
 
 function M:setup_buffer_keymaps(bufnr)

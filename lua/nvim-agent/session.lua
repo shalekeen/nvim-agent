@@ -56,13 +56,15 @@ local function process_dir_path()
 end
 
 --- Create a session for `agent_name` under the session name `name`.
---- Returns nil + error on a duplicate name.
+--- Returns nil + error on a duplicate or invalid name.
 --- @param name string        Session name (unique within this instance)
 --- @param agent_name string  Global agent the session is built from
+--- @param cwd string|nil     Project dir the session belongs to (default getcwd)
 --- @return table|nil, string|nil
-function M.create(name, agent_name)
-	if not name or name == "" then
-		return nil, "session name is required"
+function M.create(name, agent_name, cwd)
+	local nok, nerr = require("nvim-agent.workspace").validate_member_name(name)
+	if not nok then
+		return nil, nerr
 	end
 	if not agent_name or agent_name == "" then
 		return nil, "agent name is required"
@@ -88,6 +90,7 @@ function M.create(name, agent_name)
 		name = name,
 		agent = agent_name,
 		state = "created", -- "created" | "running" | "exited"
+		cwd = cwd or vim.fn.getcwd(), -- project dir; peer state lives under <cwd>/.nvim-agent
 		instance_id = M.instance_id,
 		process_dir = pdir,
 		dir = dir,
@@ -183,7 +186,7 @@ end
 --- @param sess table
 --- @return string
 function M.status_path(sess)
-	return require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd())
+	return require("nvim-agent.workspace").instance_runtime_dir(sess.cwd or vim.fn.getcwd())
 		.. "/status/"
 		.. sess.name
 		.. ".json"
@@ -202,15 +205,13 @@ end
 --- Record that the CLI process ended on its own. The session stays
 --- registered (it is still a workspace member) and can be relaunched.
 --- @param id string
---- @param code number|nil  exit code
-function M.mark_exited(id, code)
+function M.mark_exited(id)
 	local sess = M.sessions[id]
 	if not sess then
 		return
 	end
 	sess.jobid = nil
 	sess.state = "exited"
-	sess.exit_code = code
 	M.remove_status(sess)
 end
 

@@ -136,6 +136,22 @@ function M.validate_name(name, allow_ephemeral)
 	return true
 end
 
+--- Validate a member (session) name. It becomes a directory name under the
+--- workspace (overrides) and under sessions/, so path separators and
+--- leading dots are rejected — "." and ".." would otherwise alias the
+--- workspace dir itself and be deleted on remove.
+--- @param name any
+--- @return boolean, string|nil
+function M.validate_member_name(name)
+	if type(name) ~= "string" or name == "" then
+		return false, "session name is required"
+	end
+	if name:find("/", 1, true) or name:find("\\", 1, true) or name:match("^%.") then
+		return false, "session name may not contain path separators or start with '.'"
+	end
+	return true
+end
+
 --- @param name string
 --- @return table  { name = name, agents = {} }
 function M.new_manifest(name)
@@ -147,6 +163,9 @@ end
 --- @param cwd string|nil
 --- @return table|nil
 function M.read(name, cwd)
+	if not M.validate_name(name, true) then
+		return nil
+	end
 	local m = read_json(M.manifest_path(name, cwd))
 	if not m then
 		return nil
@@ -160,6 +179,9 @@ end
 --- @param cwd string|nil
 --- @return boolean
 function M.exists(name, cwd)
+	if not M.validate_name(name, true) then
+		return false
+	end
 	return vim.fn.filereadable(M.manifest_path(name, cwd)) == 1
 end
 
@@ -206,6 +228,10 @@ end
 --- @param cwd string|nil
 --- @return boolean ok, string|nil err
 function M.delete(name, cwd)
+	local ok, err = M.validate_name(name, true)
+	if not ok then
+		return false, err
+	end
 	local dir = M.workspaces_dir(cwd) .. "/" .. name
 	if vim.fn.isdirectory(dir) ~= 1 then
 		return false, "workspace '" .. name .. "' not found"
@@ -224,7 +250,11 @@ end
 --- @param cwd string|nil
 --- @return boolean ok, string|nil err
 function M.rename(old, new, cwd)
-	local ok, err = M.validate_name(new)
+	local ok, err = M.validate_name(old, true)
+	if not ok then
+		return false, err
+	end
+	ok, err = M.validate_name(new)
 	if not ok then
 		return false, err
 	end
@@ -281,8 +311,9 @@ function M.add_entry(manifest, entry, cwd)
 		return false, "agent '" .. entry.agent .. "' not found in the global library"
 	end
 	entry.name = (entry.name and entry.name ~= "") and entry.name or entry.agent
-	if entry.name:find("/", 1, true) then
-		return false, "session name may not contain '/'"
+	local nok, nerr = M.validate_member_name(entry.name)
+	if not nok then
+		return false, nerr
 	end
 	if M.find_entry(manifest, entry.name) then
 		return false, "'" .. entry.name .. "' is already in workspace '" .. manifest.name .. "'"
@@ -401,6 +432,14 @@ end
 
 --- Delete one override (file given) or all overrides (file nil) for a member.
 function M.clear_overrides(ws_name, session_name, file, cwd)
+	-- Both components become path segments under workspaces/; refuse anything
+	-- that could escape the member's own directory.
+	if not M.validate_name(ws_name, true) or not M.validate_member_name(session_name) then
+		return
+	end
+	if file and not is_agent_file(file) then
+		return
+	end
 	if file then
 		local p = M.override_path(ws_name, session_name, file, cwd)
 		if vim.fn.filereadable(p) == 1 then
@@ -437,12 +476,24 @@ end
 -- Live workspace for this Neovim instance
 ------------------------------------------------------------------------
 
---- The manifest currently loaded in this instance, or nil.
+--- The manifest currently loaded in this instance, or nil, and the project
+--- directory it was launched from. Member-level operations use that
+--- directory rather than vim.fn.getcwd() so a later :cd does not redirect
+--- overrides, status files or wakeups to a different project.
 M.current = nil
+M.current_cwd = nil
 
 --- @param manifest table|nil
-function M.set_current(manifest)
+--- @param cwd string|nil
+function M.set_current(manifest, cwd)
 	M.current = manifest
+	M.current_cwd = manifest and (cwd or vim.fn.getcwd()) or nil
+end
+
+--- Project directory of the live workspace, falling back to getcwd().
+--- @return string
+function M.cwd()
+	return M.current_cwd or vim.fn.getcwd()
 end
 
 --- @return table|nil

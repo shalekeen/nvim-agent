@@ -189,6 +189,18 @@ sess = S.get_by_name("helper")
 check("fresh session applies the workspace override over the global", read(sess.active_dir .. "/user_notes.md") == "project-specific note\n", read(sess.active_dir .. "/user_notes.md"))
 check("fresh session records overrides", sess.overrides and sess.overrides[1] == "user_notes.md")
 
+-- A file that exists ONLY as an override must disappear from the mirror on
+-- reset (the global agent has no permissions.json).
+local pf = io.open(sess.active_dir .. "/permissions.json", "w")
+pf:write('{"profile":"oversight"}')
+pf:close()
+L.sync_session_file(sess, "permissions.json", true)
+check("setup: permissions override exists", read(cwd .. "/.nvim-agent/workspaces/ephemeral/helper/permissions.json") ~= nil)
+L.reset_overrides("helper", "permissions.json", cwd)
+check("reset removes an override-only file from the mirror", read(sess.active_dir .. "/permissions.json") == nil)
+L.reset_overrides("helper", "../workspace.json", cwd)
+check("reset refuses a non-agent file and keeps the manifest", W.read(W.EPHEMERAL, cwd) ~= nil)
+
 -- reset one file → override gone, mirror back to global.
 L.reset_overrides("helper", "user_notes.md", cwd)
 check("reset removes the override file", read(ov_path) == nil)

@@ -209,9 +209,10 @@ function M.register()
 					for _, entry in ipairs(dirs) do
 						table.insert(options, entry.tag .. " - " .. entry.path)
 					end
-					ui.select(options, { prompt = "Delete directory", width = 70 }, function(choice)
-						if choice then
-							agent.remove_persistent_dir(choice:match("^([^%s]+)"), active_dir)
+					ui.select(options, { prompt = "Delete directory", width = 70 }, function(choice, idx)
+						-- Index, not label parsing: tags are free text and may contain spaces.
+						if choice and dirs[idx] then
+							agent.remove_persistent_dir(dirs[idx].tag, active_dir)
 						end
 					end)
 				end)

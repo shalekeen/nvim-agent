@@ -17,13 +17,6 @@ function M.base:setup()
 	-- no-op by default
 end
 
-function M.base:get_system_prompt()
-	-- Compose without an active_dir → uses config defaults only. Adapters
-	-- that have a session in hand should call compose_system_prompt(active_dir)
-	-- directly instead of relying on this default.
-	return require("nvim-agent.context").compose_system_prompt(nil)
-end
-
 --- Return the permission profile for a session's agent.
 ---
 --- The base grants NOTHING. Permission strings are inherently CLI-specific

@@ -11,14 +11,16 @@ local uv = vim.uv or vim.loop
 
 local LOCK_BASE = "/tmp/nvim-agent-locks"
 
---- Sanitize a filepath into a safe directory name for the lock.
---- Resolves the PARENT directory (the file itself may not exist yet, e.g.
---- the first write of a status file) so relative paths and symlinked dirs
---- map to the same lock from every process.
+--- Map a filepath to a lock directory name. Resolves the PARENT directory
+--- (the file itself may not exist yet, e.g. the first write of a status
+--- file) so relative paths and symlinked dirs map to the same lock from
+--- every process. The key is a hash plus the basename: a flattened full
+--- path could exceed NAME_MAX and make every acquire fail with ENAMETOOLONG.
 local function lock_key(filepath)
 	local parent = uv.fs_realpath(vim.fn.fnamemodify(filepath, ":h"))
 	local resolved = parent and (parent .. "/" .. vim.fn.fnamemodify(filepath, ":t")) or filepath
-	return (resolved:gsub("/", "__"))
+	local tail = vim.fn.fnamemodify(filepath, ":t"):gsub("[^%w%.%-_]", "_"):sub(1, 64)
+	return vim.fn.sha256(resolved):sub(1, 32) .. "-" .. tail
 end
 
 local function lock_dir(filepath)
@@ -54,10 +56,18 @@ local function read_info(dir)
 	}
 end
 
---- Force-remove a stale lock directory.
-local function force_remove(dir)
-	os.remove(dir .. "/info")
-	uv.fs_rmdir(dir)
+--- Reclaim a stale lock directory. Two waiters may both judge the lock
+--- stale; only one may reclaim it, or both would then mkdir and both "hold"
+--- the lock. rename is atomic, so whoever renames the stale dir away wins
+--- and removes it; the loser's rename fails and it simply retries.
+local function reclaim_stale(dir)
+	local tomb = string.format("%s.stale.%d.%d", dir, uv.os_getpid(), uv.hrtime())
+	if not uv.fs_rename(dir, tomb) then
+		return false
+	end
+	os.remove(tomb .. "/info")
+	uv.fs_rmdir(tomb)
+	return true
 end
 
 --- Acquire a lock on a filepath.
@@ -86,8 +96,7 @@ function M.acquire(filepath, opts)
 		-- Lock exists — reclaim it if its holder looks dead.
 		local info = read_info(dir)
 		if info and info.time and (os.time() - info.time) > timeout_sec then
-			force_remove(dir)
-			if try_mkdir(dir) then
+			if reclaim_stale(dir) and try_mkdir(dir) then
 				write_info(dir, agent)
 				return true
 			end

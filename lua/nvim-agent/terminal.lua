@@ -129,7 +129,9 @@ local function launch_session_in_window(sess, win, adapter)
 	sess.winnr = win
 	vim.api.nvim_set_current_win(win)
 
-	local cwd = vim.fn.getcwd()
+	local cwd = sess.cwd or vim.fn.getcwd()
+	-- Identity of THIS launch's job; see the on_exit guard below.
+	local job_ref = {}
 	sess.jobid = vim.fn.termopen(adapter:get_cmd(sess), {
 		env = {
 			NVIM_AGENT_ACTIVE_DIR = sess.active_dir,
@@ -144,12 +146,13 @@ local function launch_session_in_window(sess, win, adapter)
 		},
 		on_exit = function(_, code, _)
 			vim.schedule(function()
-				-- Stale callback guard: if this session was closed (and perhaps
-				-- recreated under the same name, hence the same id) before the
-				-- old job's exit arrived, do nothing — otherwise we would mark
-				-- the NEW session exited and strip its status file.
+				-- Stale callback guard: do nothing if this session was closed
+				-- (perhaps recreated under the same name, hence the same id), or
+				-- if it was already relaunched with a newer job (e.g. :bd! then
+				-- open) before this job's exit arrived — otherwise we would mark
+				-- the NEW job exited and strip its fresh status file.
 				local sm = require("nvim-agent.session")
-				if sm.get(sess.id) ~= sess then
+				if sm.get(sess.id) ~= sess or sess.jobid ~= job_ref.id then
 					return
 				end
 				-- The CLI ended on its own (user typed /exit, crash, ...).
@@ -157,7 +160,7 @@ local function launch_session_in_window(sess, win, adapter)
 				-- and its status file is removed so peers stop delegating to
 				-- it. It can be relaunched with :NvimAgent agent restart or
 				-- by a peer calling spawn_agent with the same name.
-				sm.mark_exited(sess.id, code)
+				sm.mark_exited(sess.id)
 				if sess.stop_requested then
 					sess.stop_requested = nil
 					return
@@ -175,8 +178,8 @@ local function launch_session_in_window(sess, win, adapter)
 			end)
 		end,
 	})
+	job_ref.id = sess.jobid
 	sess.state = "running"
-	sess.exit_code = nil
 
 	vim.api.nvim_buf_set_name(sess.bufnr, buf_name(sess))
 	vim.bo[sess.bufnr].filetype = "nvim-agent"

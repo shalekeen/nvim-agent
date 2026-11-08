@@ -506,7 +506,11 @@ function M.trigger_agent(agent_name, text)
     local fn = io.open(tmp_name, 'r'); local name = fn:read('*a'); fn:close(); os.remove(tmp_name)
     local ft = io.open(tmp_text, 'r'); local text = ft:read('*a'); ft:close(); os.remove(tmp_text)
     local ok, result = pcall(require('nvim-agent.terminal').send_by_name, name, text)
-    return vim.json.encode({success = ok, error = ok and nil or tostring(result)})
+    -- send_by_name returns false (not an error) when the peer has no running
+    -- job; that must surface as a failed wake, not a success.
+    if not ok then return vim.json.encode({success = false, error = tostring(result)}) end
+    if result ~= true then return vim.json.encode({success = false, error = 'agent is not running'}) end
+    return vim.json.encode({success = true})
   ]],
 		tmp_name,
 		tmp_text

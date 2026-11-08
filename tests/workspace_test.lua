@@ -114,6 +114,15 @@ assert_eq("then sorted by name", all[2].name, "aaa-first-alphabetically")
 assert_eq("then sorted by name (2)", all[3].name, "feature-dev")
 check("named not flagged ephemeral", all[3].ephemeral == false)
 
+-- Path traversal: names reaching the filesystem are validated everywhere.
+for _, evil in ipairs({ "..", "../..", "../instances", ".hidden", "a/b" }) do
+	check("read rejects " .. evil, workspace.read(evil, cwd) == nil)
+	check("exists rejects " .. evil, workspace.exists(evil, cwd) == false)
+	check("delete rejects " .. evil, workspace.delete(evil, cwd) == false)
+	check("rename-from rejects " .. evil, workspace.rename(evil, "x", cwd) == false)
+end
+check("project dir survived traversal attempts", vim.fn.isdirectory(cwd) == 1 and vim.fn.isdirectory(cwd .. "/.nvim-agent/instances") == 1)
+
 -- Name validation: 'ephemeral' reserved for user workspaces.
 check("validate_name rejects 'ephemeral' for user workspaces", workspace.validate_name("ephemeral") == false)
 check("validate_name allows 'ephemeral' when asked", workspace.validate_name("ephemeral", true) == true)
@@ -134,6 +143,9 @@ check("add persisted immediately", on_disk and #on_disk.agents == 1 and on_disk.
 local ok_dupname, err_dupname = workspace.add_entry(named, { agent = "Bob", name = "Alice" }, cwd)
 check("duplicate session name rejected", not ok_dupname and err_dupname:find("already in") ~= nil, tostring(err_dupname))
 
+for _, evil in ipairs({ ".", "..", ".dot", "a/b", "a\\b" }) do
+	check("add_entry rejects member name " .. string.format("%q", evil), workspace.add_entry(named, { agent = "Bob", name = evil }, cwd) == false)
+end
 assert_eq("same agent twice under a different session name", workspace.add_entry(named, { agent = "Alice", name = "Alice-2" }, cwd), true)
 assert_eq("add Bob", workspace.add_entry(named, { agent = "Bob" }, cwd), true)
 on_disk = workspace.read("feature-dev", cwd)
@@ -194,6 +206,14 @@ check("clearing the last single override removes the dir too", (function()
 	return vim.fn.isdirectory(workspace.override_dir(ov_ws, "Alice", cwd)) == 0
 end)())
 
+-- clear_overrides refuses non-agent files and bad member names (it deletes).
+workspace.write_override(ov_ws, "Alice", "role.md", "r\n", cwd)
+workspace.clear_overrides(ov_ws, "Alice", "../workspace.json", cwd)
+check("clear_overrides ignores a non-agent file", workspace.exists(ov_ws, cwd))
+workspace.clear_overrides(ov_ws, "..", nil, cwd)
+check("clear_overrides ignores a traversal member name", vim.fn.isdirectory(cwd .. "/.nvim-agent/workspaces") == 1 and workspace.exists(ov_ws, cwd))
+workspace.clear_overrides(ov_ws, "Alice", nil, cwd)
+
 -- remove_entry deletes the member's overrides.
 workspace.write_override(ov_ws, "Bob", "user_notes.md", "bob notes\n", cwd)
 check("setup: Bob has an override", #workspace.list_overrides(ov_ws, "Bob", cwd) == 1)
@@ -236,6 +256,15 @@ end)(), nil)
 -- ---------------------------------------------------------------------------
 
 check("create without agent fails", select(1, session.create("x", nil)) == nil)
+check("create rejects traversal session name", select(1, session.create("..", "Alice")) == nil)
+check("session records its project cwd", (function()
+	local s = session.create("CwdCheck", "Alice", "/some/project")
+	local ok = s and s.cwd == "/some/project"
+	if s then
+		session.close(s.id)
+	end
+	return ok
+end)())
 local s1 = session.create("Alice", "Alice")
 check("session created", s1 ~= nil and s1.name == "Alice" and s1.agent == "Alice")
 assert_eq("initial state", s1.state, "created")
@@ -251,7 +280,6 @@ check("is_running true with a job", session.is_running(s1) == true)
 session.mark_exited(s1.id, 1)
 assert_eq("mark_exited sets state", s1.state, "exited")
 check("mark_exited clears job", s1.jobid == nil)
-assert_eq("mark_exited records code", s1.exit_code, 1)
 check("exited session is still registered (membership kept)", session.get_by_name("Alice") == s1)
 
 session.close(s2.id)

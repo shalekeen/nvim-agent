@@ -34,10 +34,6 @@ Only `get_cmd(session)` is mandatory. Everything else is optional and
 checked with `if adapter.<method> then` before being called, so leaving
 something off is safe.
 
-`get_system_prompt()` also exists on the base prototype but is **not**
-called by the harness — it's an adapter-private helper you can override if
-your implementation wants it.
-
 Everything CLI-specific that used to live in core now hangs off the
 adapter: the base prototype's `get_agent_permissions` grants nothing and
 its `get_context_contract` describes a hook-less, read-on-demand CLI. The

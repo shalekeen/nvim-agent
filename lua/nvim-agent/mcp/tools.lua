@@ -33,6 +33,16 @@ local function project_comm_dir(subdir)
 	return RUNTIME_DIR .. "/" .. subdir
 end
 
+--- A peer name becomes a file name under the runtime dir; refuse anything
+--- that could escape it.
+local function valid_peer_name(name)
+	return type(name) == "string"
+		and name ~= ""
+		and not name:find("/", 1, true)
+		and not name:find("\\", 1, true)
+		and not name:match("^%.")
+end
+
 --- List names of all peer agents that have written a status file.
 --- Peers are discovered from $RUNTIME_DIR/status/*.json (excludes self), so
 --- only agents hosted by the same Neovim instance are ever visible.
@@ -881,8 +891,8 @@ function M.execute(tool_name, arguments)
 		local to = arguments.to
 		local message = arguments.message
 
-		if not to or to == "" then
-			return { { type = "text", text = "Error: 'to' is required" } }, true
+		if not valid_peer_name(to) then
+			return { { type = "text", text = "Error: 'to' must be a plain agent name" } }, true
 		end
 		if not message or message == "" then
 			return { { type = "text", text = "Error: 'message' is required" } }, true
@@ -943,8 +953,8 @@ function M.execute(tool_name, arguments)
 		local to = arguments.to
 		local content = arguments.content
 
-		if not to or to == "" then
-			return { { type = "text", text = "Error: 'to' is required (agent name or 'all')" } }, true
+		if to ~= "all" and not valid_peer_name(to) then
+			return { { type = "text", text = "Error: 'to' must be a plain agent name, or 'all'" } }, true
 		end
 		if not content or content == "" then
 			return { { type = "text", text = "Error: 'content' is required" } }, true
@@ -1001,6 +1011,17 @@ function M.execute(tool_name, arguments)
 			local ok, err = deliver_and_wake(to)
 			if not ok then
 				return { { type = "text", text = "Error: " .. (err or "delivery failed") } }, true
+			end
+			if not vim.tbl_contains(list_peer_names(), to) then
+				return {
+					{
+						type = "text",
+						text = string.format(
+							"Message queued for '%s' — no active peer by that name right now; it will be read if that agent runs.",
+							to
+						),
+					},
+				}, false
 			end
 			return { { type = "text", text = string.format("Message sent to '%s'", to) } }, false
 		end
