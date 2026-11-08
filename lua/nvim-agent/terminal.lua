@@ -18,8 +18,24 @@ local function is_win_valid(sess)
 	return sess.winnr and vim.api.nvim_win_is_valid(sess.winnr)
 end
 
+--- Render the configured title template for a session.
+local function buf_title(sess)
+	local ws = require("nvim-agent.workspace").get_current()
+	local tpl = (config.get().terminal or {}).title or "{name}"
+	return (tpl:gsub("{(%w+)}", {
+		name = sess.name,
+		agent = sess.agent or "",
+		workspace = ws and ws.name or "",
+	}))
+end
+
+--- Buffer name for a session terminal. Shaped exactly like Neovim's own
+--- terminal buffer names (term://<cwd>//<pid>:<cmd>) so every bufferline
+--- (barbar, bufferline.nvim, the built-in tabline) shows the "command" part
+--- — which we make the title — instead of a path or a bracketed label.
 local function buf_name(sess)
-	return string.format("[Agent-%s: %s]", sess.name, sess.agent or "agent")
+	local pid = sess.jobid and vim.fn.jobpid(sess.jobid) or 0
+	return string.format("term://%s//%d:%s", sess.cwd or vim.fn.getcwd(), pid, buf_title(sess))
 end
 
 --- Pin an agent buffer to the left in barbar using internal state API.
@@ -183,6 +199,9 @@ local function launch_session_in_window(sess, win, adapter)
 
 	vim.api.nvim_buf_set_name(sess.bufnr, buf_name(sess))
 	vim.bo[sess.bufnr].filetype = "nvim-agent"
+	-- For user bufferline customisations that want the raw pieces.
+	vim.b[sess.bufnr].nvim_agent_session = sess.name
+	vim.b[sess.bufnr].nvim_agent_agent = sess.agent
 	pin_agent_buffer(sess.bufnr)
 
 	if adapter.setup_buffer_keymaps then
@@ -227,7 +246,7 @@ function M.open(session_id)
 
 	-- Not running: either never launched, or exited. Launch afresh, reusing
 	-- the window if it is still open. The dead terminal buffer must go
-	-- BEFORE the new one is named (it still owns the "[Agent-…]" name), but
+	-- BEFORE the new one is named (it may still own the same name), but
 	-- deleting the only buffer in a window closes the window — so park a
 	-- throwaway scratch buffer in the window first.
 	local old_buf = is_buf_valid(sess) and sess.bufnr or nil

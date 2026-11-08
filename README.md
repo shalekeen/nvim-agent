@@ -67,6 +67,7 @@ return {
 | `auto_write_context` | `true` | Refresh `ephemeral.json` when switching to an agent buffer. |
 | `terminal.split_direction` | `"vertical"` | `"vertical"` or `"horizontal"`. |
 | `terminal.split_size` | `0.4` | Fraction of the screen the agent split takes. |
+| `terminal.title` | `"{name}"` | Tab title of an agent terminal in barbar or any bufferline. Placeholders: `{name}` (session), `{agent}`, `{workspace}`. Buffers are named like native terminals, `term://<cwd>//<pid>:<title>`, so only the title is displayed. |
 | `nvim_agent_preamble` | (built-in) | Layer 1 of the composed system prompt — the CLI-neutral runtime contract from nvim-agent (directory layout, context-file catalogue, MCP tools, coordination rules). Always emitted first; cannot be removed by editing an agent. The CLI-specific part (how context is delivered, which native tools to avoid) is layer 1b and comes from the adapter. |
 | `default_system_prompt` | (built-in) | The `system_prompt.md` a newly defined agent starts with. Also the fallback when an agent's prompt is empty. |
 

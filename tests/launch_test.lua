@@ -95,7 +95,10 @@ check("status file written in this instance's dir", vim.fn.filereadable(status_d
 check("status file carries the role", (read(status_dir .. "/helper.json") or ""):find("helps with things") ~= nil)
 check("active_dir mirrors role.md", read(sess.active_dir .. "/role.md") == "helps with things\n")
 check("active_dir mirrors system_prompt.md", read(sess.active_dir .. "/system_prompt.md") == "HELPER PROMPT")
-check("terminal buffer named [Agent-<session>: <agent>]", vim.api.nvim_buf_get_name(sess.bufnr):find("%[Agent%-helper: helper%]") ~= nil)
+-- Buffer name is term://<cwd>//<pid>:<title> so bufferlines show just the title.
+local bname = vim.api.nvim_buf_get_name(sess.bufnr)
+check("terminal buffer named like a native terminal with the session name as title", bname:match("^term://.*//%d+:helper$") ~= nil, bname)
+check("buffer-local vars expose session + agent", vim.b[sess.bufnr].nvim_agent_session == "helper" and vim.b[sess.bufnr].nvim_agent_agent == "helper")
 check("statusline", require("nvim-agent").statusline() == "Agent-helper: helper @ ephemeral", require("nvim-agent").statusline())
 
 -- ---------------------------------------------------------------------------
@@ -133,7 +136,7 @@ end)
 check("relaunched into the same session object", S.get_by_name("helper") == sess and S.is_running(sess))
 check("relaunch got a fresh terminal buffer", sess.bufnr ~= nil and sess.bufnr ~= first_bufnr)
 check("old dead buffer was deleted", not vim.api.nvim_buf_is_valid(first_bufnr))
-check("fresh buffer carries the [Agent-…] name", vim.api.nvim_buf_get_name(sess.bufnr):find("%[Agent%-helper: helper%]") ~= nil)
+check("fresh buffer carries the session-name title", vim.api.nvim_buf_get_name(sess.bufnr):match("//%d+:helper$") ~= nil, vim.api.nvim_buf_get_name(sess.bufnr))
 check("status file back after relaunch", vim.fn.filereadable(status_dir .. "/helper.json") == 1)
 
 -- terminal.open on a running session must not relaunch.

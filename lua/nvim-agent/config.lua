@@ -18,6 +18,11 @@ M.defaults = {
 	terminal = {
 		split_direction = "vertical",
 		split_size = 0.4,
+		-- Tab / bufferline title of an agent terminal. Placeholders: {name}
+		-- (session name), {agent} (global agent), {workspace}. The buffer is
+		-- named like a native terminal, term://<cwd>//<pid>:<title>, so barbar,
+		-- bufferline.nvim and the built-in tabline all display just the title.
+		title = "{name}",
 	},
 	-- Layer 1 of the composed system prompt: the CLI-neutral runtime
 	-- contract from nvim-agent itself (directory layout, context-file
