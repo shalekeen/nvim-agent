@@ -56,6 +56,16 @@ Use the MCP tools for file reads and edits so changes land in the user's live Ne
 buffers rather than bypassing the editor.]]
 end
 
+--- Extra environment variables for the CLI process itself (merged into the
+--- terminal's `termopen` env after the harness's NVIM_AGENT_* variables, which
+--- cannot be overridden). Use it for CLI-specific knobs that only make sense
+--- when the CLI runs inside a Neovim terminal split.
+--- @param session table
+--- @return table<string, string>
+function M.base:get_env(session)
+	return {}
+end
+
 function M.base:on_enter(bufnr)
 	-- no-op by default; adapters can override to run code when entering the agent buffer
 end

@@ -152,6 +152,8 @@ check("base permissions grant nothing", type(base_perms) == "table" and #base_pe
 -- The bundled Claude Code adapter: hook contract, profiles from the session mirror.
 local cc = require("nvim-agent.adapter.claude_code")
 check("claude_code contract names the UserPromptSubmit hook", cc:get_context_contract():find("UserPromptSubmit") ~= nil)
+check("base adapter contributes no env", next(base:get_env({})) == nil)
+check("claude_code forces the inline renderer (alternate screen has no scrollback)", cc:get_env({}).CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN == "1")
 check("claude_code contract warns off built-in file tools", cc:get_context_contract():find("built%-in Read") ~= nil)
 check(
 	"claude_code default permissions are its 'full' profile",

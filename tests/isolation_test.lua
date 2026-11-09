@@ -87,7 +87,11 @@ package.preload["barbar.ui.render"] = function() return nil end
 local cwd = SANDBOX .. "/proj"
 vim.cmd("cd " .. vim.fn.fnameescape(cwd))
 require("nvim-agent").setup({
-	adapter = { get_cmd = function() return { "sh", "-c", "sleep 30" } end },
+	adapter = {
+		get_cmd = function() return { "sh", "-c", "sleep 30" } end,
+		-- Adapter env is merged in, but must not override harness variables.
+		get_env = function() return { STUB_ADAPTER_ENV = "yes", NVIM_AGENT_INSTANCE_ID = "hijacked" } end,
+	},
 	base_dir = SANDBOX .. "/base",
 	auto_open = false,
 })
@@ -133,7 +137,7 @@ function info.launch_and_plant()
 		local found = {}
 		for kv in raw:gmatch("[^%z]+") do
 			local k, v = kv:match("^([^=]+)=(.*)$")
-			if k and k:match("^NVIM_AGENT_") then found[k] = v end
+			if k and (k:match("^NVIM_AGENT_") or k == "STUB_ADAPTER_ENV") then found[k] = v end
 		end
 		if next(found) then env = found; return true end
 		return false
@@ -218,6 +222,8 @@ if have_proc then
 		and A.env.NVIM_AGENT_PROCESS_DIR ~= B.env.NVIM_AGENT_PROCESS_DIR
 		and A.env.NVIM_AGENT_ACTIVE_DIR ~= B.env.NVIM_AGENT_ACTIVE_DIR
 		and A.env.NVIM_AGENT_INSTANCE_ID ~= B.env.NVIM_AGENT_INSTANCE_ID)
+	check("adapter get_env reaches the CLI process", A.env.STUB_ADAPTER_ENV == "yes")
+	check("adapter get_env cannot override harness NVIM_AGENT_* variables", A.env.NVIM_AGENT_INSTANCE_ID ~= "hijacked")
 	check("A and B CLI environments AGREE on the workspace history vault (shared by design)",
 		A.env.NVIM_AGENT_HISTORY_DIR ~= nil and A.env.NVIM_AGENT_HISTORY_DIR == B.env.NVIM_AGENT_HISTORY_DIR
 		and A.env.NVIM_AGENT_HISTORY_DIR == cwd .. "/.nvim-agent/workspaces/team/history", A.env.NVIM_AGENT_HISTORY_DIR)

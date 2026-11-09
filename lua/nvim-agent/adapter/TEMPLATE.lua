@@ -84,6 +84,17 @@ function M:get_cmd(session)
 end
 
 ------------------------------------------------------------------------
+-- §1a. get_env(session)   ── OPTIONAL
+--
+-- Extra environment for the CLI process (merged into termopen's env; the
+-- harness's NVIM_AGENT_* variables always win). Use it for renderer or
+-- behaviour knobs that only make sense inside a Neovim terminal split. The
+-- bundled Claude Code adapter uses it to disable the alternate-screen
+-- renderer so output stays in the buffer's scrollback.
+-- function M:get_env(session)
+-- 	return { MY_CLI_INLINE_RENDERER = "1" }
+-- end
+
 -- §1b. get_context_contract()   ── OPTIONAL (strongly recommended)
 --
 -- Layer 1b of the composed system prompt, inserted right after the core

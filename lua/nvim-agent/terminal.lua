@@ -194,10 +194,13 @@ local function launch_session_in_window(sess, win, adapter)
 		require("nvim-agent.mcp.history").forget_agent(history_dir, sess.name, require("nvim-agent.session").instance_id)
 	end
 
-	-- Identity of THIS launch's job; see the on_exit guard below.
-	local job_ref = {}
-	sess.jobid = vim.fn.termopen(adapter:get_cmd(sess), {
-		env = {
+	-- CLI-specific environment from the adapter; the harness's own variables
+	-- below take precedence so an adapter cannot break the context plumbing.
+	local env = {}
+	for k, v in pairs(type(adapter.get_env) == "function" and adapter:get_env(sess) or {}) do
+		env[k] = v
+	end
+	for k, v in pairs({
 			NVIM_AGENT_ACTIVE_DIR = sess.active_dir,
 			NVIM_AGENT_PROCESS_DIR = sess.process_dir,
 			NVIM_AGENT_CWD = cwd,
@@ -209,7 +212,14 @@ local function launch_session_in_window(sess, win, adapter)
 			NVIM_AGENT_RUNTIME_DIR = ws.instance_runtime_dir(cwd),
 			-- The workspace's work-history vault: shared across instances.
 			NVIM_AGENT_HISTORY_DIR = history_dir,
-		},
+	}) do
+		env[k] = v
+	end
+
+	-- Identity of THIS launch's job; see the on_exit guard below.
+	local job_ref = {}
+	sess.jobid = vim.fn.termopen(adapter:get_cmd(sess), {
+		env = env,
 		on_exit = function(_, code, _)
 			vim.schedule(function()
 				-- Stale callback guard: do nothing if this session was closed

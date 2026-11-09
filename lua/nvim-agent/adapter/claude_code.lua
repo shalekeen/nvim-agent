@@ -166,6 +166,17 @@ end
 --- UserPromptSubmit hook written by this adapter) and which tool surface to
 --- use, naming Claude Code's own built-ins. It lives here, not in config.lua,
 --- so adapters for CLIs without hooks are never told about one.
+--- Claude Code's "fullscreen" renderer (settings.json `"tui": "fullscreen"`,
+--- or its own upsell) draws on the terminal's alternate screen, for which
+--- Neovim keeps NO scrollback: the only history is what the TUI scrolls
+--- internally, so long responses appear cut off in the split. Force the
+--- classic inline renderer inside Neovim so output lands in the buffer's
+--- scrollback ('scrollback', see terminal.scrollback). The user's global
+--- setting is untouched for Claude Code run outside Neovim.
+function M:get_env(session)
+	return { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN = "1" }
+end
+
 function M:get_context_contract()
 	return [[## How context reaches you (Claude Code)
 
