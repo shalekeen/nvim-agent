@@ -143,6 +143,13 @@ function M:get_cmd(session)
 		debug_log,
 	}
 
+	-- Session display name (prompt box, /resume picker, terminal title); set
+	-- by rename_conversation before launch.
+	if type(session.conversation_title) == "string" and session.conversation_title ~= "" then
+		table.insert(cmd, "--name")
+		table.insert(cmd, session.conversation_title)
+	end
+
 	if vim.fn.filereadable(mcp_config) == 1 then
 		table.insert(cmd, "--mcp-config")
 		table.insert(cmd, mcp_config)
@@ -166,6 +173,25 @@ end
 --- UserPromptSubmit hook written by this adapter) and which tool surface to
 --- use, naming Claude Code's own built-ins. It lives here, not in config.lua,
 --- so adapters for CLIs without hooks are never told about one.
+--- Name this session's Claude Code conversation. Before launch the title is
+--- already on the session, so get_cmd passes it as `--name`; nothing more to
+--- do. On a running session (jobid alive) the CLI is told via its /rename
+--- slash command, typed into the terminal.
+--- @param session table
+--- @param title string
+--- @return boolean
+function M:rename_conversation(session, title)
+	if type(title) ~= "string" or title == "" then
+		return false
+	end
+	session.conversation_title = title
+	if session.jobid and vim.fn.jobwait({ session.jobid }, 0)[1] == -1 then
+		-- Running: /rename takes effect immediately in the live session.
+		vim.fn.chansend(session.jobid, "/rename " .. title .. "\r")
+	end
+	return true
+end
+
 --- Claude Code's "fullscreen" renderer (settings.json `"tui": "fullscreen"`,
 --- or its own upsell) draws on the terminal's alternate screen, for which
 --- Neovim keeps NO scrollback: the only history is what the TUI scrolls

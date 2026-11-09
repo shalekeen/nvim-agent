@@ -153,6 +153,23 @@ check("base permissions grant nothing", type(base_perms) == "table" and #base_pe
 local cc = require("nvim-agent.adapter.claude_code")
 check("claude_code contract names the UserPromptSubmit hook", cc:get_context_contract():find("UserPromptSubmit") ~= nil)
 check("base adapter contributes no env", next(base:get_env({})) == nil)
+check("base rename_conversation is a no-op returning false", base:rename_conversation({}, "x") == false)
+do
+	local fake = { active_dir = tmp_active, dir = vim.fn.fnamemodify(tmp_active, ":h"), name = "qa" }
+	check("claude_code rename before launch records the title", cc:rename_conversation(fake, "qa 2026-11-09 10:00") == true and fake.conversation_title == "qa 2026-11-09 10:00")
+	local argv = cc:get_cmd(fake)
+	local i = vim.fn.index(argv, "--name")
+	check("claude_code get_cmd passes the title as --name", i >= 0 and argv[i + 2] == "qa 2026-11-09 10:00", table.concat(argv, " "):sub(1, 80))
+	check("claude_code get_cmd omits --name without a title", vim.fn.index(cc:get_cmd({ active_dir = tmp_active, dir = fake.dir, name = "qa" }), "--name") == -1)
+	-- A live job: the rename is typed into the terminal as /rename.
+	local got = ""
+	local job = vim.fn.jobstart({ "cat" }, { pty = true, on_stdout = function(_, d) got = got .. table.concat(d, "\n") end })
+	fake.jobid = job
+	cc:rename_conversation(fake, "qa renamed")
+	vim.wait(2000, function() return got:find("/rename qa renamed", 1, true) ~= nil end, 50)
+	vim.fn.jobstop(job)
+	check("claude_code rename on a running session types /rename into the terminal", got:find("/rename qa renamed", 1, true) ~= nil, got)
+end
 check("claude_code forces the inline renderer (alternate screen has no scrollback)", cc:get_env({}).CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN == "1")
 check("claude_code contract warns off built-in file tools", cc:get_context_contract():find("built%-in Read") ~= nil)
 check(

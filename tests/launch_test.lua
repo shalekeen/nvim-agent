@@ -58,9 +58,14 @@ local cwd = sandbox .. "/proj"
 vim.fn.mkdir(cwd, "p")
 vim.cmd("cd " .. vim.fn.fnameescape(cwd))
 
+local renamed = {}
 local stub = {
 	get_cmd = function()
 		return { "sh", "-c", "sleep 30" }
+	end,
+	rename_conversation = function(_, sess, title)
+		table.insert(renamed, { name = sess.name, title = title, pre = sess.conversation_title })
+		return true
 	end,
 }
 require("nvim-agent").setup({ adapter = stub, base_dir = sandbox .. "/base", auto_open = false })
@@ -100,6 +105,8 @@ local bname = vim.api.nvim_buf_get_name(sess.bufnr)
 check("terminal buffer named like a native terminal with the session name as title", bname:match("^term://.*//%d+:helper$") ~= nil, bname)
 check("buffer-local vars expose session + agent", vim.b[sess.bufnr].nvim_agent_session == "helper" and vim.b[sess.bufnr].nvim_agent_agent == "helper")
 check("terminal scrollback raised to Neovim's maximum", vim.bo[sess.bufnr].scrollback == 100000, vim.bo[sess.bufnr].scrollback)
+check("conversation titled '<name> <date> <time>'", (sess.conversation_title or ""):match("^helper %d%d%d%d%-%d%d%-%d%d %d%d:%d%d$") ~= nil, sess.conversation_title)
+check("adapter rename hook called at launch with the title already on the session", #renamed == 1 and renamed[1].title == sess.conversation_title and renamed[1].pre == sess.conversation_title)
 check("statusline", require("nvim-agent").statusline() == "Agent-helper: helper @ ephemeral", require("nvim-agent").statusline())
 
 -- ---------------------------------------------------------------------------
@@ -135,6 +142,7 @@ vim.wait(2000, function()
 	return sess.jobid ~= nil
 end)
 check("relaunched into the same session object", S.get_by_name("helper") == sess and S.is_running(sess))
+check("adapter rename hook called again on relaunch", #renamed == 2 and renamed[2].name == "helper")
 check("relaunch got a fresh terminal buffer", sess.bufnr ~= nil and sess.bufnr ~= first_bufnr)
 check("old dead buffer was deleted", not vim.api.nvim_buf_is_valid(first_bufnr))
 check("fresh buffer carries the session-name title", vim.api.nvim_buf_get_name(sess.bufnr):match("//%d+:helper$") ~= nil, vim.api.nvim_buf_get_name(sess.bufnr))

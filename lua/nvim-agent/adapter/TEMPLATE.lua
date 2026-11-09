@@ -80,8 +80,32 @@ function M:get_cmd(session)
 		table.insert(cmd, mcp_config)
 	end
 
+	-- Conversation name ("<agent> <YYYY-MM-DD HH:MM>", set by the harness via
+	-- rename_conversation before launch). Pass it if your CLI has a flag.
+	-- if session.conversation_title then
+	-- 	table.insert(cmd, "--name")
+	-- 	table.insert(cmd, session.conversation_title)
+	-- end
+
 	return cmd
 end
+
+------------------------------------------------------------------------
+-- §1c. rename_conversation(session, title)   ── OPTIONAL
+--
+-- Called right before every launch with "<agent> <YYYY-MM-DD HH:MM>" (the
+-- title is already in session.conversation_title, so get_cmd can use it),
+-- and possibly later on a running session. If your CLI has a runtime rename
+-- command, send it to the terminal when the job is alive. Return true when
+-- the CLI was told the name.
+------------------------------------------------------------------------
+-- function M:rename_conversation(session, title)
+-- 	session.conversation_title = title
+-- 	if session.jobid and vim.fn.jobwait({ session.jobid }, 0)[1] == -1 then
+-- 		vim.fn.chansend(session.jobid, "/rename " .. title .. "\r")
+-- 	end
+-- 	return true
+-- end
 
 ------------------------------------------------------------------------
 -- §1a. get_env(session)   ── OPTIONAL

@@ -66,6 +66,20 @@ function M.base:get_env(session)
 	return {}
 end
 
+--- Name the CLI's conversation for this session. The harness calls it with
+--- "<session name> <YYYY-MM-DD HH:MM>" right before each launch (initial and
+--- relaunch alike), after recording the title in `session.conversation_title`
+--- so `get_cmd` can pass it as a flag. It may also be called on a running
+--- session (a user-driven rename): adapters whose CLI accepts a rename
+--- command at runtime send it to the terminal then. Base does nothing;
+--- return true if the CLI was told the name.
+--- @param session table
+--- @param title string
+--- @return boolean
+function M.base:rename_conversation(session, title)
+	return false
+end
+
 function M.base:on_enter(bufnr)
 	-- no-op by default; adapters can override to run code when entering the agent buffer
 end

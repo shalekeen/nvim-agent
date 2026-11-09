@@ -165,6 +165,15 @@ end
 --- terminal buffer, names it, pins it in barbar, runs adapter buffer-keymap
 --- setup, and scrolls to bottom. Used by M.open (single session, and
 --- relaunch of an exited session) and M.open_grid (per cell).
+--- "<session name> <YYYY-MM-DD HH:MM>": the title given to the CLI's
+--- conversation at each launch.
+--- @param sess table
+--- @param now number|nil  os.time() override (tests)
+--- @return string
+function M.conversation_title(sess, now)
+	return string.format("%s %s", sess.name, os.date("%Y-%m-%d %H:%M", now))
+end
+
 local function launch_session_in_window(sess, win, adapter)
 	require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
 
@@ -192,6 +201,14 @@ local function launch_session_in_window(sess, win, adapter)
 		-- Scoped to THIS instance's entries: the vault is shared with any other
 		-- Neovim running the workspace, whose log must survive our fresh start.
 		require("nvim-agent.mcp.history").forget_agent(history_dir, sess.name, require("nvim-agent.session").instance_id)
+	end
+
+	-- Name the CLI's conversation after the agent and this launch time, so the
+	-- CLI's own session list / terminal title identify it. Recorded on the
+	-- session first so adapters can pass it as a launch flag from get_cmd.
+	sess.conversation_title = M.conversation_title(sess)
+	if type(adapter.rename_conversation) == "function" then
+		adapter:rename_conversation(sess, sess.conversation_title)
 	end
 
 	-- CLI-specific environment from the adapter; the harness's own variables
