@@ -108,15 +108,20 @@ vim.opt.statusline = "%f %m%r  %{%v:lua.require('nvim-agent').statusline()%}%=%y
 {
   "inbox_wakeups": true,
   "inbox_wakeup_interval": 30,
-  "history": "persistent"
+  "history": "persistent",
+  "periodic": [
+    { "prompt": "Summarise what you have done since your last summary and log it with log_work.", "interval": 900 },
+    { "prompt": "Check the test suite still passes.", "interval": 1800, "when": "always" }
+  ]
 }
 ```
 
 - `inbox_wakeups` (default `true`): nvim-agent periodically nudges an idle agent whose mailbox or trigger file has new content so it resumes work. Set `false` for an agent that should act only when addressed directly; `trigger_agent` wakes still reach it, and messages still arrive in its context on its next prompt.
 - `inbox_wakeup_interval` (default `30`): seconds between those checks for this agent, minimum 5. An agent is nudged only if it produced no terminal output for a whole interval and has something pending, so `300` means at most one nudge every five minutes.
 - `history` (default `"persistent"`): `"fresh"` starts an empty work-history file every time the agent's CLI launches, restarts included, instead of appending to the instance's log. Use it for agents whose past work should never colour a new session.
+- `periodic` (default `[]`): prompts typed into the agent's terminal on a schedule. Each entry needs a `prompt` and an `interval` in seconds (minimum 5), and may set `when` to `"idle"` (the default: send only if the agent produced no terminal output for a whole interval, so a prompt never interrupts work in progress) or `"always"`. Each entry keeps its own clock. Invalid entries are dropped.
 
-Unknown keys are ignored and invalid values fall back to the defaults. Edits to the live copy take effect without a relaunch for `inbox_wakeups` and `inbox_wakeup_interval`; `history` is applied at the next launch.
+Unknown keys are ignored and invalid values fall back to the defaults. Edits to the live copy take effect without a relaunch for `inbox_wakeups`, `inbox_wakeup_interval` and `periodic`; `history` is applied at the next launch.
 
 Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/agents/spawned/<name>/` and are listed in their own section so they don't crowd out your own; copy one with `:NvimAgent agent copy` to adopt it. Copying is also how you make a permanently different variant of an agent. For project-specific tweaks you don't need a copy: see overrides below.
 

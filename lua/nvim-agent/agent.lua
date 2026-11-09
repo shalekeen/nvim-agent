@@ -97,10 +97,20 @@ end
 ---                                   an empty work-history file every time
 ---                                   the agent's CLI launches (restart
 ---                                   included), instead of appending.
+---   periodic               array    [] — prompts typed into the agent's
+---                                   terminal on a schedule. Each item:
+---                                     prompt    string  REQUIRED, the text sent
+---                                     interval  number  REQUIRED, seconds (min 5)
+---                                     when      "idle" | "always"  default "idle":
+---                                               only send if the agent produced
+---                                               no output for a whole interval,
+---                                               so a prompt never lands mid-task
+---                                   Invalid items are dropped.
 M.DEFAULT_CONFIG = {
 	inbox_wakeups = true,
 	inbox_wakeup_interval = 30,
 	history = "persistent",
+	periodic = {},
 }
 
 M.MIN_WAKEUP_INTERVAL = 5
@@ -127,6 +137,24 @@ function M.read_config(dir)
 	end
 	if data.history == "fresh" or data.history == "persistent" then
 		out.history = data.history
+	end
+	if type(data.periodic) == "table" then
+		out.periodic = {}
+		for _, item in ipairs(data.periodic) do
+			if
+				type(item) == "table"
+				and type(item.prompt) == "string"
+				and not item.prompt:match("^%s*$")
+				and type(item.interval) == "number"
+				and item.interval >= M.MIN_WAKEUP_INTERVAL
+			then
+				table.insert(out.periodic, {
+					prompt = item.prompt,
+					interval = math.floor(item.interval),
+					when = item.when == "always" and "always" or "idle",
+				})
+			end
+		end
 	end
 	return out
 end

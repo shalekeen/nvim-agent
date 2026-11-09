@@ -91,6 +91,64 @@ function M.evaluate_wakeup(sess, now)
 	return "nudged"
 end
 
+--- Evaluate the agent's scheduled prompts (config.json: periodic[]) at time
+--- `now`. Each entry keeps its own clock, keyed by prompt+interval so a
+--- config edit that changes one entry does not disturb the others. An
+--- entry fires when its interval has elapsed since its last evaluation and,
+--- for when = "idle" (the default), the terminal produced no output in that
+--- time. Returns the list of entries fired, as { index, prompt } pairs.
+--- @param sess table
+--- @param now number
+--- @return table[]
+function M.evaluate_periodic(sess, now)
+	local fired = {}
+	local states = M._periodic_state
+	if not states then
+		return fired
+	end
+
+	local bufnr = sess.bufnr
+	if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) or not sess.jobid then
+		states[sess.id] = nil
+		return fired
+	end
+
+	local cfg = require("nvim-agent.session").config(sess)
+	if #cfg.periodic == 0 then
+		states[sess.id] = nil
+		return fired
+	end
+
+	local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+	local st = states[sess.id] or {}
+	states[sess.id] = st
+	local live = {}
+
+	for i, item in ipairs(cfg.periodic) do
+		local key = item.interval .. "\0" .. item.prompt
+		live[key] = true
+		local e = st[key]
+		if not e then
+			st[key] = { at = now, tick = tick }
+		elseif now - e.at >= item.interval * 1000 then
+			local idle = tick == e.tick
+			e.at = now
+			e.tick = tick
+			if item.when == "always" or idle then
+				require("nvim-agent.terminal").send(sess.id, item.prompt)
+				table.insert(fired, { index = i, prompt = item.prompt })
+			end
+		end
+	end
+	-- Forget entries that were removed from the config.
+	for key in pairs(st) do
+		if not live[key] then
+			st[key] = nil
+		end
+	end
+	return fired
+end
+
 function M.register()
 	-- Idempotent: if register() is invoked twice (e.g. plugin reload), the old
 	-- timers must be stopped before we allocate new ones.
@@ -103,6 +161,7 @@ function M.register()
 		end
 	end
 	M._wake_state = nil
+	M._periodic_state = nil
 
 	local group = vim.api.nvim_create_augroup("NvimAgent", { clear = true })
 	local config = require("nvim-agent.config")
@@ -206,6 +265,7 @@ function M.register()
 	-- session that has produced no terminal output for a whole period and
 	-- has a pending trigger or new mail is nudged to resume.
 	M._wake_state = {}
+	M._periodic_state = {}
 	M._continuation_timer = uv.new_timer()
 	M._continuation_timer:start(
 		M.TICK_MS,
@@ -218,6 +278,7 @@ function M.register()
 			local now = uv.now()
 			for _, sess in ipairs(session_mod.list()) do
 				M.evaluate_wakeup(sess, now)
+				M.evaluate_periodic(sess, now)
 			end
 		end)
 	)

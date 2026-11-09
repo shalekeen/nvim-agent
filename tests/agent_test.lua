@@ -86,6 +86,16 @@ for _, bad in ipairs({ '"30"', "0", "-5", "2", "true" }) do
 	write(cfg_dir .. "/config.json", '{"inbox_wakeup_interval": ' .. bad .. "}")
 	check("read_config rejects interval " .. bad .. " (falls back to 30)", agent.read_config(cfg_dir).inbox_wakeup_interval == 30)
 end
+check("default periodic is empty", #agent.DEFAULT_CONFIG.periodic == 0)
+write(cfg_dir .. "/config.json", '{"periodic": [{"prompt": "status?", "interval": 600}, {"prompt": "run tests", "interval": 60.7, "when": "always"}]}')
+local per = agent.read_config(cfg_dir).periodic
+check("read_config parses periodic entries", #per == 2 and per[1].prompt == "status?" and per[1].interval == 600 and per[1].when == "idle", vim.inspect(per))
+check("read_config floors periodic interval and keeps when=always", per[2].interval == 60 and per[2].when == "always")
+write(cfg_dir .. "/config.json", '{"periodic": [{"prompt": "", "interval": 60}, {"prompt": "x", "interval": 2}, {"prompt": "y"}, {"interval": 60}, "junk", {"prompt": "ok", "interval": 30, "when": "sometimes"}]}')
+per = agent.read_config(cfg_dir).periodic
+check("read_config drops invalid periodic entries and normalises when", #per == 1 and per[1].prompt == "ok" and per[1].when == "idle", vim.inspect(per))
+write(cfg_dir .. "/config.json", '{"periodic": "nope"}')
+check("read_config ignores a non-array periodic", #agent.read_config(cfg_dir).periodic == 0)
 write(cfg_dir .. "/config.json", '{"inbox_wakeups": "nope", "history": "weekly", "extra": 1}')
 check("read_config ignores invalid values and unknown keys", vim.deep_equal(agent.read_config(cfg_dir), agent.DEFAULT_CONFIG))
 write(cfg_dir .. "/config.json", '{"history": "fresh"}')

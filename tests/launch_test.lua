@@ -282,6 +282,40 @@ cf:write('{"inbox_wakeups": true, "inbox_wakeup_interval": 5}')
 cf:close()
 check("evaluate_wakeup: a 5 s interval is due after 5 s", AC.evaluate_wakeup(sess, 905 * 1000) ~= "waiting")
 os.remove(trig_dir .. "/helper.md")
+
+-- Periodic prompts, driven with the same fake clock. Each entry has its own
+-- clock; "idle" entries skip a period in which the terminal produced output.
+cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write('{"periodic": [{"prompt": "status?", "interval": 60}, {"prompt": "run tests", "interval": 120, "when": "always"}]}')
+cf:close()
+local function fired_prompts(list)
+	local out = {}
+	for _, f in ipairs(list) do
+		table.insert(out, f.prompt)
+	end
+	return table.concat(out, ",")
+end
+check("periodic: first observation only baselines", #AC.evaluate_periodic(sess, 0) == 0)
+check("periodic: nothing due at 30 s", #AC.evaluate_periodic(sess, 30 * 1000) == 0)
+check("periodic: 60 s entry fires at 60 s (idle), 120 s entry not yet", fired_prompts(AC.evaluate_periodic(sess, 60 * 1000)) == "status?")
+check("periodic: at 120 s both are due", fired_prompts(AC.evaluate_periodic(sess, 120 * 1000)) == "status?,run tests")
+-- Simulate terminal output during the next period: the idle entry skips,
+-- the always entry still fires.
+AC._periodic_state[sess.id]["60\0status?"].tick = -1
+AC._periodic_state[sess.id]["120\0run tests"].tick = -1
+check("periodic: idle entry skips an active period, always entry fires", fired_prompts(AC.evaluate_periodic(sess, 240 * 1000)) == "run tests")
+check("periodic: idle entry fires again once quiet", fired_prompts(AC.evaluate_periodic(sess, 300 * 1000)) == "status?")
+-- Removing an entry from the config forgets its clock; adding one baselines.
+cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write('{"periodic": [{"prompt": "new one", "interval": 60}]}')
+cf:close()
+check("periodic: config change drops old clocks and baselines the new entry", #AC.evaluate_periodic(sess, 360 * 1000) == 0 and AC._periodic_state[sess.id]["60\0status?"] == nil)
+check("periodic: new entry fires after its interval", fired_prompts(AC.evaluate_periodic(sess, 420 * 1000)) == "new one")
+check("periodic: inactive session fires nothing", #AC.evaluate_periodic({ id = "ghost", name = "ghost", active_dir = sess.active_dir }, 0) == 0)
+cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write("{}")
+cf:close()
+check("periodic: empty config clears state", #AC.evaluate_periodic(sess, 480 * 1000) == 0 and AC._periodic_state[sess.id] == nil)
 cf = io.open(sess.active_dir .. "/config.json", "w")
 cf:write('{"inbox_wakeups": false, "history": "fresh"}')
 cf:close()
