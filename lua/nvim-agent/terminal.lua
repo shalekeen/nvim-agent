@@ -173,6 +173,10 @@ local function launch_session_in_window(sess, win, adapter)
 	end
 
 	sess.bufnr = vim.api.nvim_create_buf(true, false)
+	-- Must be set before termopen: the terminal's scrollback is sized when
+	-- the channel is created. Clamp to Neovim's permitted range.
+	local sb = tonumber((config.get().terminal or {}).scrollback) or 100000
+	vim.bo[sess.bufnr].scrollback = math.max(-1, math.min(100000, math.floor(sb)))
 	vim.api.nvim_win_set_buf(win, sess.bufnr)
 	sess.winnr = win
 	vim.api.nvim_set_current_win(win)

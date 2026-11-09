@@ -99,6 +99,7 @@ check("active_dir mirrors system_prompt.md", read(sess.active_dir .. "/system_pr
 local bname = vim.api.nvim_buf_get_name(sess.bufnr)
 check("terminal buffer named like a native terminal with the session name as title", bname:match("^term://.*//%d+:helper$") ~= nil, bname)
 check("buffer-local vars expose session + agent", vim.b[sess.bufnr].nvim_agent_session == "helper" and vim.b[sess.bufnr].nvim_agent_agent == "helper")
+check("terminal scrollback raised to Neovim's maximum", vim.bo[sess.bufnr].scrollback == 100000, vim.bo[sess.bufnr].scrollback)
 check("statusline", require("nvim-agent").statusline() == "Agent-helper: helper @ ephemeral", require("nvim-agent").statusline())
 
 -- ---------------------------------------------------------------------------

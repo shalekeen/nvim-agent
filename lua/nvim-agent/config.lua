@@ -27,6 +27,9 @@ M.defaults = {
 		-- (:NvimAgent arrange, <leader>a=). Rows are added as needed and every
 		-- window is equalised.
 		grid_columns = 4,
+		-- Lines of terminal scrollback kept per agent buffer. Neovim's default
+		-- is 10000; 100000 is the maximum Neovim allows.
+		scrollback = 100000,
 	},
 	-- Layer 1 of the composed system prompt: the CLI-neutral runtime
 	-- contract from nvim-agent itself (directory layout, context-file
