@@ -392,16 +392,22 @@ local function open_history_scratch(title, files)
 	local lines = {}
 	local found = false
 	for _, f in ipairs(files) do
-		local fh = io.open(f.path, "r")
-		if fh then
+		local text = f.content
+		if not text and f.path then
+			local fh = io.open(f.path, "r")
+			if fh then
+				text = fh:read("*a")
+				fh:close()
+			end
+		end
+		if text and text ~= "" then
 			found = true
 			table.insert(lines, string.rep("=", 60))
 			table.insert(lines, "## " .. f.name)
 			table.insert(lines, string.rep("=", 60))
-			for line in fh:lines() do
+			for line in (text .. "\n"):gmatch("([^\n]*)\n") do
 				table.insert(lines, line)
 			end
-			fh:close()
 			table.insert(lines, "")
 		end
 	end
@@ -417,17 +423,23 @@ local function open_history_scratch(title, files)
 	vim.api.nvim_win_set_buf(0, buf)
 end
 
+--- Work-history vault for the live instance in `cwd`.
+local function vault_for(cwd)
+	local H = require("nvim-agent.mcp.history")
+	return H.vault_dir(require("nvim-agent.workspace").instance_runtime_dir(cwd))
+end
+
 --- History for one agent in this instance (picker when name is nil).
 function M.history_view_agent(name)
-	local cwd = vim.fn.getcwd()
-	local history_dir = require("nvim-agent.workspace").instance_runtime_dir(cwd) .. "/history"
+	local H = require("nvim-agent.mcp.history")
+	local vault = vault_for(vim.fn.getcwd())
 
 	if name then
-		local path = history_dir .. "/" .. name .. ".md"
-		if vim.fn.filereadable(path) == 0 then
+		local content = H.read_agent(vault, name)
+		if not content then
 			return vim.notify("nvim-agent: no history for agent '" .. name .. "'", vim.log.levels.INFO)
 		end
-		return open_history_scratch("Agent History: " .. name, { { name = name, path = path } })
+		return open_history_scratch("Agent History: " .. name, { { name = name, content = content } })
 	end
 
 	local seen, candidates = {}, {}
@@ -437,8 +449,7 @@ function M.history_view_agent(name)
 			table.insert(candidates, sess.name)
 		end
 	end
-	for _, p in ipairs(vim.fn.glob(history_dir .. "/*.md", false, true)) do
-		local n = vim.fn.fnamemodify(p, ":t:r")
+	for _, n in ipairs(H.list_agents(vault)) do
 		if not seen[n] then
 			seen[n] = true
 			table.insert(candidates, n)
@@ -459,16 +470,16 @@ end
 
 --- History for every member of the live workspace, in this instance.
 function M.history_view_workspace()
-	local cwd = vim.fn.getcwd()
+	local H = require("nvim-agent.mcp.history")
 	local ws = require("nvim-agent.workspace")
 	local m = ws.get_current()
 	if not m then
 		return vim.notify("nvim-agent: no live workspace", vim.log.levels.WARN)
 	end
-	local history_dir = ws.instance_runtime_dir(cwd) .. "/history"
+	local vault = vault_for(vim.fn.getcwd())
 	local files = {}
 	for _, e in ipairs(m.agents or {}) do
-		table.insert(files, { name = e.name, path = history_dir .. "/" .. e.name .. ".md" })
+		table.insert(files, { name = e.name, content = H.read_agent(vault, e.name) })
 	end
 	open_history_scratch("Workspace History: " .. m.name, files)
 end
@@ -476,19 +487,31 @@ end
 --- History across every Neovim instance that has ever run in this project.
 --- Agents only ever see their own instance; this view stitches them together.
 function M.history_view_project()
+	local H = require("nvim-agent.mcp.history")
 	local cwd = vim.fn.getcwd()
 	local instances_dir = require("nvim-agent.workspace").runtime_dir(cwd) .. "/instances"
-	local paths = vim.fn.glob(instances_dir .. "/*/history/*.md", false, true)
-	if #paths == 0 then
-		return vim.notify("nvim-agent: no history files found in project", vim.log.levels.INFO)
-	end
 	local files = {}
-	for _, p in ipairs(paths) do
-		local agent_name = vim.fn.fnamemodify(p, ":t:r")
-		local instance_id = vim.fn.fnamemodify(p, ":h:h:t")
-		table.insert(files, { name = agent_name .. "  (instance " .. instance_id:sub(1, 8) .. ")", path = p })
+	for _, inst in ipairs(vim.fn.glob(instances_dir .. "/*", false, true)) do
+		local content = H.read_all(H.vault_dir(inst), nil)
+		if content then
+			table.insert(files, { name = "instance " .. vim.fn.fnamemodify(inst, ":t"):sub(1, 8), content = content })
+		end
+	end
+	if #files == 0 then
+		return vim.notify("nvim-agent: no history found in project", vim.log.levels.INFO)
 	end
 	open_history_scratch("Project History", files)
+end
+
+--- Open the live instance's vault README in Neovim and print the folder path
+--- so it can be opened in Obsidian.
+function M.history_open()
+	local H = require("nvim-agent.mcp.history")
+	local vault = vault_for(vim.fn.getcwd())
+	vim.fn.mkdir(vault, "p")
+	H.ensure_vault(vault)
+	vim.cmd("edit " .. vim.fn.fnameescape(vault .. "/README.md"))
+	vim.notify("nvim-agent: work-history vault (open in Obsidian): " .. vault, vim.log.levels.INFO)
 end
 
 ------------------------------------------------------------------------

@@ -208,24 +208,40 @@ check("list_agent_roles excludes legacy project-level peer", not roles:find("gho
 -- 6. log_work + read_agent_history round-trip.
 -- ---------------------------------------------------------------------------
 
-run("log_work", { summary = "implemented foo" })
-run("log_work", { summary = "fixed bar" })
+local logged, lerr = run("log_work", { summary = "implemented foo\nWith a retry loop.", topics = { "Auth Flow", "testing" } })
+check("log_work succeeds", not lerr and logged:find("Logged '", 1, true) ~= nil, logged)
+run("log_work", { summary = "fixed bar", title = "Bar fix" })
+
+local today = os.date("%Y-%m-%d")
+local vault = runtime_dir .. "/history"
+check("vault README created", read(vault .. "/README.md") ~= nil)
+local day_dir = vault .. "/agents/Alice/" .. today
+local entries = vim.fn.glob(day_dir .. "/*.md", false, true)
+check("one note per log_work under agents/Alice/<today>/", #entries == 2, vim.inspect(entries))
+-- Two notes in the same minute sort alphabetically, so look at both.
+local both = (read(entries[1]) or "") .. (read(entries[2]) or "")
+check("entry notes carry the summary and topic links", both:find("implemented foo", 1, true) ~= nil and both:find("[[topics/auth-flow]]", 1, true) ~= nil, both)
+check("second entry used the explicit title in its file name", vim.fn.glob(day_dir .. "/*-bar-fix.md") ~= "")
+check("topics normalised to slugs", read(vault .. "/topics/auth-flow.md") ~= nil)
+check("agent index groups today's entries", (read(vault .. "/agents/Alice/index.md") or ""):find("## " .. today, 1, true) ~= nil)
 
 local history, _ = run("read_agent_history", {})
-check("history contains 'implemented foo'", history:find("implemented foo") ~= nil)
-check("history contains 'fixed bar'", history:find("fixed bar") ~= nil)
-check("history is per-agent (Alice's file)", history:find("implemented foo") ~= nil)
+check("read_agent_history returns Alice's note", history:find("implemented foo", 1, true) ~= nil and history:find("fixed bar", 1, true) ~= nil)
 
--- read_cwd_history returns history for all agents in the project.
--- Add a Bob history entry directly so we can verify aggregation.
-vim.fn.mkdir(runtime_dir .. "/history", "p")
-local bob_hist = io.open(runtime_dir .. "/history/Bob.md", "w")
-bob_hist:write("\n---\n**[2026-01-01 00:00] Agent: Bob**\n\nreviewed PR\n")
-bob_hist:close()
+-- Another agent's entry (written through the same module) shares a topic.
+local Hm = require("history")
+Hm.log(vault, "Bob", "reviewed PR for the retry loop", { topics = { "testing" } })
 
 local cwd_history, _ = run("read_cwd_history", {})
-check("read_cwd_history includes Alice's entries", cwd_history:find("implemented foo") ~= nil)
-check("read_cwd_history includes Bob's entries", cwd_history:find("reviewed PR") ~= nil)
+check("read_cwd_history includes Alice's entries", cwd_history:find("implemented foo", 1, true) ~= nil)
+check("read_cwd_history includes Bob's entries", cwd_history:find("reviewed PR", 1, true) ~= nil)
+
+local topics_out, _ = run("list_history_topics", {})
+check("list_history_topics lists slugs", topics_out:find("auth%-flow") ~= nil and topics_out:find("testing") ~= nil, topics_out)
+local topic_out, _ = run("read_history_topic", { topic = "Testing" })
+check("read_history_topic resolves entries from both agents", topic_out:find("implemented foo", 1, true) ~= nil and topic_out:find("reviewed PR", 1, true) ~= nil, topic_out)
+local missing_out, merr = run("read_history_topic", { topic = "nope" })
+check("read_history_topic on an unknown topic is a soft miss", not merr and missing_out:find("No topic", 1, true) ~= nil)
 
 -- ---------------------------------------------------------------------------
 -- 7. Concurrent message delivery: hammer Bob's mailbox with many writes and

@@ -94,7 +94,11 @@ write(active_dir .. "/role.md", "lead implementer\n")
 write(cwd .. "/PROJECT.md", "# Project\n")
 write(active_dir .. "/persistent_dirs.json", "[]")
 write(active_dir .. "/user_notes.md", "# Notes\n")
-write(runtime_dir .. "/history/Alice.md", "log entry\n")
+local today = os.date("%Y-%m-%d")
+vim.fn.mkdir(runtime_dir .. "/history/agents/Alice/" .. today, "p")
+vim.fn.mkdir(runtime_dir .. "/history/topics", "p")
+write(runtime_dir .. "/history/agents/Alice/" .. today .. "/10-00-log-entry.md", "log entry\n")
+write(runtime_dir .. "/history/topics/auth.md", "# auth\n")
 write(process_dir .. "/tmux_captures.json", '[{"pane":"main"}]')
 write(runtime_dir .. "/status/Bob.json", '{"agent":"Bob","role":"reviewer","current_task":"reading","updated_at":"2026-01-01T00:00:00Z"}')
 write(runtime_dir .. "/messages/Alice.md", "ping")
@@ -104,7 +108,8 @@ write(process_dir .. "/ephemeral.json", '{"buffers":[]}')
 -- would be easy to spot if it leaked.
 write(other_runtime_dir .. "/status/Mallory.json", '{"agent":"Mallory","role":"intruder","current_task":"LEAK_STATUS","updated_at":"2026-01-01T00:00:00Z"}')
 write(other_runtime_dir .. "/messages/Alice.md", "LEAK_MESSAGE")
-write(other_runtime_dir .. "/history/Alice.md", "LEAK_HISTORY\n")
+vim.fn.mkdir(other_runtime_dir .. "/history/agents/Alice/" .. today, "p")
+write(other_runtime_dir .. "/history/agents/Alice/" .. today .. "/10-00-leak.md", "LEAK_HISTORY\n")
 write(cwd .. "/.nvim-agent/status/Legacy.json", '{"agent":"Legacy","role":"ghost","current_task":"LEAK_LEGACY","updated_at":"2026-01-01T00:00:00Z"}')
 write(cwd .. "/.nvim-agent/messages/Alice.md", "LEAK_LEGACY_MESSAGE")
 
@@ -156,7 +161,7 @@ local cmd_no_rt = string.format(
 local output_no_rt = vim.fn.system(cmd_no_rt)
 check("no RUNTIME_DIR: no peer_agents section", output_no_rt:find("--- peer_agents ---", 1, true) == nil)
 check("no RUNTIME_DIR: no messages section", output_no_rt:find("--- messages_for_you.md ---", 1, true) == nil)
-check("no RUNTIME_DIR: no history section", output_no_rt:find("--- agent_history.md", 1, true) == nil)
+check("no RUNTIME_DIR: no history section", output_no_rt:find("--- work_history", 1, true) == nil)
 check("no RUNTIME_DIR: legacy shared mailbox still NOT read", output_no_rt:find("LEAK_LEGACY") == nil)
 check("no RUNTIME_DIR: editor context still emitted", output_no_rt:find("--- ephemeral.json ---", 1, true) ~= nil)
 
@@ -182,7 +187,8 @@ local expected = {
 	"PROJECT.md",
 	"persistent_dirs.json",
 	"user_notes.md",
-	"agent_history.md",
+	"work_history",
+	"work_history_topics",
 	"tmux_captures.json",
 	"peer_agents",
 	"messages_for_you.md",

@@ -113,7 +113,7 @@ function info.launch_and_plant()
 
 	local function put(p, c) vim.fn.mkdir(vim.fn.fnamemodify(p, ":h"), "p"); local f = assert(io.open(p, "w")); f:write(c); f:close() end
 	put(inst .. "/messages/engineer.md", "MSG_" .. MARK .. "\n")
-	put(inst .. "/history/engineer.md", "HIST_" .. MARK .. "\n")
+	put(inst .. "/history/agents/engineer/" .. os.date("%Y-%m-%d") .. "/10-00-hist.md", "HIST_" .. MARK .. "\n")
 	put(inst .. "/status/peer-" .. MARK .. ".json", '{"agent":"peer-' .. MARK .. '","role":"ROLE_' .. MARK .. '","current_task":"TASK_' .. MARK .. '","updated_at":"x"}')
 	put(sess.process_dir .. "/tmux_captures.json", '{"captures":[{"content":"TMUX_' .. MARK .. '"}]}')
 	-- A workspace override made from this instance is workspace config and

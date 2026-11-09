@@ -348,6 +348,7 @@ function M.register()
 		{ "<leader>aha", function() agent.history_view_agent() end, desc = "View history for an agent (picker)" },
 		{ "<leader>ahw", agent.history_view_workspace, desc = "View history for the live workspace" },
 		{ "<leader>ahp", agent.history_view_project, desc = "View project history (all instances)" },
+		{ "<leader>aho", agent.history_open, desc = "Open the work-history vault (Obsidian folder)" },
 	}
 
 	-- <leader>a1 … <leader>a9: jump straight to the nth session.

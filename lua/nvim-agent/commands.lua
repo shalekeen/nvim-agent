@@ -37,7 +37,7 @@ local VIEW_SUBS = { "prompt", "notes", "dirs", "role", "config" }
 local DIR_SUBS = { "add", "remove" }
 local ROLE_SUBS = { "edit", "view" }
 local TMUX_SUBS = { "add", "clear", "view" }
-local HISTORY_SUBS = { "agent", "workspace", "project" }
+local HISTORY_SUBS = { "agent", "workspace", "project", "open" }
 
 local SECOND_LEVEL = {
 	open = OPEN_SUBS,
@@ -306,8 +306,10 @@ local function dispatch(opts)
 			agent.history_view_workspace()
 		elseif action == "project" then
 			agent.history_view_project()
+		elseif action == "open" then
+			agent.history_open()
 		else
-			usage("history what? (agent [name]|workspace|project)")
+			usage("history what? (agent [name]|workspace|project|open)")
 		end
 	else
 		usage("unknown command '" .. sub .. "'")

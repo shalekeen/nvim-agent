@@ -41,6 +41,8 @@ local TOOL_GROUPS = {
 		"mcp__nvim-agent__log_work",
 		"mcp__nvim-agent__read_agent_history",
 		"mcp__nvim-agent__read_cwd_history",
+		"mcp__nvim-agent__list_history_topics",
+		"mcp__nvim-agent__read_history_topic",
 		"mcp__nvim-agent__trigger_agent",
 	},
 }
@@ -305,12 +307,22 @@ done
 if [ -n "$RUNTIME_DIR" ] && [ -n "$SESSION_NAME" ]; then
     PROJ_DIR="$RUNTIME_DIR"
 
-    # agent_history.md grows when the agent calls log_work — between calls it's stable.
-    PROJ_HIST="$PROJ_DIR/history/$SESSION_NAME.md"
-    if [ -s "$PROJ_HIST" ]; then
-        echo "--- agent_history.md (last 40 lines) ---"
-        tail -40 "$PROJ_HIST"
+    # Work history is an Obsidian vault; inject this agent's entries for today
+    # (one note each, grows only when it calls log_work) and the topic names.
+    HIST_TODAY="$PROJ_DIR/history/agents/$SESSION_NAME/$(date +%F)"
+    if [ -d "$HIST_TODAY" ] && ls "$HIST_TODAY"/*.md >/dev/null 2>&1; then
+        echo "--- work_history (today, last 40 lines) ---"
+        cat "$HIST_TODAY"/*.md | tail -40
         echo ""
+    fi
+    TOPICS_DIR="$PROJ_DIR/history/topics"
+    if [ -d "$TOPICS_DIR" ]; then
+        topics=$(ls "$TOPICS_DIR" 2>/dev/null | sed 's/\.md$//' | tr '\n' ' ')
+        if [ -n "$topics" ]; then
+            echo "--- work_history_topics ---"
+            echo "$topics"
+            echo ""
+        fi
     fi
 fi
 

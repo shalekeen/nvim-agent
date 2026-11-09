@@ -322,8 +322,9 @@ cf:close()
 L.sync_session_file(sess, "config.json", true)
 check("config.json is saved as a workspace override", read(cwd .. "/.nvim-agent/workspaces/ephemeral/helper/config.json") ~= nil)
 
--- history=fresh: an existing log is wiped when the CLI (re)launches.
-local hist_path = W.instance_runtime_dir(cwd) .. "/history/helper.md"
+-- history=fresh: the agent's vault notes are wiped when the CLI (re)launches.
+local hist_path = W.instance_runtime_dir(cwd) .. "/history/agents/helper/" .. os.date("%Y-%m-%d") .. "/10-00-old-work.md"
+vim.fn.mkdir(vim.fn.fnamemodify(hist_path, ":h"), "p")
 local hf = io.open(hist_path, "w")
 hf:write("old work\n")
 hf:close()
@@ -342,6 +343,7 @@ cf = io.open(sess.active_dir .. "/config.json", "w")
 cf:write('{"inbox_wakeups": true, "history": "persistent"}')
 cf:close()
 L.sync_session_file(sess, "config.json", true)
+vim.fn.mkdir(vim.fn.fnamemodify(hist_path, ":h"), "p")
 hf = io.open(hist_path, "w")
 hf:write("kept work\n")
 hf:close()

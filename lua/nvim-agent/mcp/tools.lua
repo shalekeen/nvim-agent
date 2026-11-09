@@ -3,6 +3,7 @@
 local nvim_rpc = require("nvim_rpc")
 local json = vim.json
 local filelock = require("filelock")
+local history = require("history")
 
 -- Context directories inherited from the agent CLI's process environment.
 -- Every agent process launched by nvim-agent has these set:
@@ -135,25 +136,6 @@ local function read_file_contents(path)
 	local content = f:read("*a")
 	f:close()
 	return content
-end
-
---- Append a timestamped entry to a history file, creating it if needed.
---- Locked because two instances of the same agent (e.g. across a session
---- restart) could otherwise interleave writes to the same file.
-local function append_history(path, agent, summary)
-	vim.fn.mkdir(vim.fn.fnamemodify(path, ":h"), "p")
-	local timestamp = os.date("%Y-%m-%d %H:%M")
-	local block = string.format("\n---\n**[%s] Agent: %s**\n\n%s\n", timestamp, agent, summary)
-	local ok = with_lock(path, function()
-		local f = io.open(path, "a")
-		if not f then
-			error("could not open " .. path)
-		end
-		f:write(block)
-		f:close()
-		return true
-	end)
-	return ok ~= nil
 end
 
 local M = {}
@@ -489,18 +471,27 @@ M.definitions = {
 
 	{
 		name = "log_work",
-		description = "Append a timestamped entry to your work history file "
-			.. "($NVIM_AGENT_RUNTIME_DIR/history/<name>.md). Per-agent history files are "
-			.. "aggregated by read_cwd_history so all peers can see what every agent has done. "
-			.. "Call this after completing any meaningful unit of work "
-			.. "(feature implemented, bug fixed, research completed). Be specific — peers and "
-			.. "future sessions read this to understand what has been done and why.",
+		description = "Record a unit of work in the shared work-history vault (an Obsidian folder at "
+			.. "$NVIM_AGENT_RUNTIME_DIR/history/). Writes one note, agents/<you>/<today>/HH-MM-<title>.md, "
+			.. "indexes it under your day, and links it from each topic note — which is how your work connects "
+			.. "to peers' work and earlier days. Call it when you finish something meaningful: a feature or fix "
+			.. "landed, a decision taken (say why and what you rejected), a research result, a hand-off, a "
+			.. "blocker. Not for every tool call.",
 		inputSchema = {
 			type = "object",
 			properties = {
 				summary = {
 					type = "string",
-					description = "Clear description of what was done and any important decisions made",
+					description = "What you did, why, and what a peer would need to continue. 3–10 lines; name files and functions concretely.",
+				},
+				title = {
+					type = "string",
+					description = "Short headline for the entry. Defaults to the first line of summary.",
+				},
+				topics = {
+					type = "array",
+					items = { type = "string" },
+					description = "1–4 topic tags (lowercase-kebab-case, e.g. 'auth', 'testing'). Reuse existing topics (list_history_topics) before inventing new ones.",
 				},
 			},
 			required = { "summary" },
@@ -509,8 +500,35 @@ M.definitions = {
 
 	{
 		name = "read_agent_history",
-		description = "Read your complete personal work history for this project. "
-			.. "Use this when you need to recall exactly what you did in previous sessions.",
+		description = "Read your own work-history notes, newest day first. "
+			.. "Pass days to limit how far back to read (default: everything).",
+		inputSchema = {
+			type = "object",
+			properties = {
+				days = { type = "number", description = "Only the most recent N days (optional)" },
+			},
+			required = {},
+		},
+	},
+
+	{
+		name = "read_cwd_history",
+		description = "Read every agent's work-history notes in this Neovim instance for the last few days "
+			.. "(default 3), newest day first. Use it at the start of a session to orient yourself; "
+			.. "pass days to go further back.",
+		inputSchema = {
+			type = "object",
+			properties = {
+				days = { type = "number", description = "How many recent days to include (default 3)" },
+			},
+			required = {},
+		},
+	},
+
+	{
+		name = "list_history_topics",
+		description = "List the topic names in the work-history vault. Check this before tagging a "
+			.. "log_work entry so you reuse existing topics.",
 		inputSchema = {
 			type = "object",
 			properties = vim.empty_dict(),
@@ -519,14 +537,15 @@ M.definitions = {
 	},
 
 	{
-		name = "read_cwd_history",
-		description = "Read the full shared work history for this Neovim instance — "
-			.. "every entry logged by any agent it has hosted. "
-			.. "Use this at the start of a new session to orient yourself on past work.",
+		name = "read_history_topic",
+		description = "Read one topic's note plus every entry linked to it, across days and agents — "
+			.. "the fastest way to catch up on a single thread of work before touching it.",
 		inputSchema = {
 			type = "object",
-			properties = vim.empty_dict(),
-			required = {},
+			properties = {
+				topic = { type = "string", description = "Topic name (any case/spacing; normalised to the slug)" },
+			},
+			required = { "topic" },
 		},
 	},
 
@@ -1194,17 +1213,20 @@ function M.execute(tool_name, arguments)
 			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set — cannot locate history" } }, true
 		end
 
-		-- Write to $RUNTIME_DIR/history/<agent>.md
-		local hist_dir = project_comm_dir("history")
-		vim.fn.mkdir(hist_dir, "p")
-		local hist_path = hist_dir .. "/" .. AGENT_NAME .. ".md"
-		local ok = append_history(hist_path, AGENT_NAME, summary)
-
-		if ok then
-			return { { type = "text", text = "Work logged to " .. hist_path } }, false
-		else
-			return { { type = "text", text = "Warning: could not write to " .. hist_path } }, false
+		-- The vault is written by several agents at once; serialise on the
+		-- vault dir so two log_work calls cannot interleave within a note.
+		local vault = project_comm_dir("history")
+		vim.fn.mkdir(vault, "p")
+		local result, lock_err = with_lock(vault .. "/.write", function()
+			return history.log(vault, AGENT_NAME, summary, { title = arguments.title, topics = arguments.topics })
+		end)
+		if not result then
+			return { { type = "text", text = "Error: could not write work history: " .. tostring(lock_err) } }, true
 		end
+		local tag = #result.topics > 0 and (" · topics: " .. table.concat(result.topics, ", ")) or ""
+		return {
+			{ type = "text", text = string.format("Logged '%s' as %s.md%s", result.title, result.link, tag) },
+		}, false
 
 	-- ----------------------------------------------------------------
 	-- read_agent_history
@@ -1213,41 +1235,52 @@ function M.execute(tool_name, arguments)
 		if RUNTIME_DIR == "" then
 			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
-
-		local path = project_comm_dir("history") .. "/" .. AGENT_NAME .. ".md"
-		local content = read_file_contents(path)
-		if not content or content:match("^%s*$") then
-			return {
-				{ type = "text", text = "No work history recorded yet for '" .. AGENT_NAME .. "' in this project" },
-			},
-				false
+		local content = history.read_agent(project_comm_dir("history"), AGENT_NAME, tonumber(arguments.days))
+		if not content then
+			return { { type = "text", text = "No work history recorded yet for '" .. AGENT_NAME .. "' in this instance" } }, false
 		end
 		return { { type = "text", text = content } }, false
 
 	-- ----------------------------------------------------------------
-	-- read_cwd_history  (reads all agents' history for this project)
+	-- read_cwd_history  (every agent, recent days)
 	-- ----------------------------------------------------------------
 	elseif tool_name == "read_cwd_history" then
 		if RUNTIME_DIR == "" then
 			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
-
-		local hist_dir = project_comm_dir("history")
-		local parts = {}
-		local entries = vim.fn.isdirectory(hist_dir) == 1 and vim.fn.readdir(hist_dir) or {}
-		table.sort(entries)
-		for _, entry in ipairs(entries) do
-			local agent_name = entry:match("^(.+)%.md$")
-			local content = agent_name and read_file_contents(hist_dir .. "/" .. entry)
-			if content and not content:match("^%s*$") then
-				table.insert(parts, "### " .. agent_name .. "\n" .. content)
-			end
+		local days = tonumber(arguments.days) or 3
+		local content = history.read_all(project_comm_dir("history"), days)
+		if not content then
+			return { { type = "text", text = "No work history recorded yet in this instance" } }, false
 		end
+		return { { type = "text", text = content } }, false
 
-		if #parts == 0 then
-			return { { type = "text", text = "No project history recorded yet" } }, false
+	-- ----------------------------------------------------------------
+	-- list_history_topics / read_history_topic
+	-- ----------------------------------------------------------------
+	elseif tool_name == "list_history_topics" then
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
 		end
-		return { { type = "text", text = table.concat(parts, "\n\n") } }, false
+		local topics = history.list_topics(project_comm_dir("history"))
+		if #topics == 0 then
+			return { { type = "text", text = "No topics yet" } }, false
+		end
+		return { { type = "text", text = table.concat(topics, "\n") } }, false
+
+	elseif tool_name == "read_history_topic" then
+		if RUNTIME_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
+		end
+		local topic = arguments.topic
+		if type(topic) ~= "string" or topic == "" then
+			return { { type = "text", text = "Error: 'topic' is required" } }, true
+		end
+		local content = history.read_topic(project_comm_dir("history"), topic)
+		if not content then
+			return { { type = "text", text = "No topic '" .. topic .. "' in the vault (see list_history_topics)" } }, false
+		end
+		return { { type = "text", text = content } }, false
 
 	-- ----------------------------------------------------------------
 	-- spawn_agent  (dynamically create a new workspace agent at runtime)

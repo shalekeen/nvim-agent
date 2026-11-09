@@ -60,7 +60,8 @@ CLI you are running in and is described in the "How context reaches you" section
 - tmux_captures.json          -- (process dir) Captured tmux pane content, SHARED by all agents
 - messages_for_you.md         -- (runtime dir) Pending messages from peer agents (if any)
 - peer_agents                 -- (runtime dir) Role + status of each other active agent (if any)
-- agent_history.md            -- (runtime dir) Last 40 lines of YOUR work history (if any)
+- work_history                -- (runtime dir) today's entries from your work-history vault (if any)
+- work_history_topics         -- (runtime dir) topic names in the vault (if any)
 
 ephemeral.json is refreshed every time the user switches to any agent terminal buffer.
 Runtime-dir files are scoped to this Neovim instance: your peers are exactly the other
@@ -179,25 +180,41 @@ whether a task should be delegated to a more appropriate peer.
 
 ---
 
-## Work History Tools
+## Work History (Obsidian vault)
 
-History is written to disk under the runtime dir and survives for as long as this
-Neovim instance's runtime dir does. The hook injects a recent excerpt before each
-prompt so you always have context on past work.
+Every agent's work log lives in one structured vault at $NVIM_AGENT_RUNTIME_DIR/history/
+(the user opens that folder in Obsidian). Never write to it by hand; use the tools.
+Layout:
+- agents/<agent>/YYYY-MM-DD/HH-MM-<title>.md   one note per unit of work, filed under the
+                                                 agent and the day it was logged
+- agents/<agent>/index.md                      that agent's entries grouped by day
+- topics/<topic>.md                            one note per topic linking every tagged entry
+                                                 across agents and days — topics are how
+                                                 threads of work connect
 
-### log_work(summary)
-Append a timestamped entry to your work history file ($NVIM_AGENT_RUNTIME_DIR/history/<name>.md).
-This file is included in the output of read_cwd_history so all peers can see what you did.
-Call this after completing a meaningful unit of work: implementing a feature, fixing a
-bug, completing a research spike, etc. Be specific -- future-you and peer agents will
-rely on these entries to understand what was done and avoid duplicate work.
+### log_work(summary, title?, topics?)
+Record a unit of work. Call it when you finish something meaningful: a feature or fix
+landed, a decision taken (say why, and what you rejected), a research result, a hand-off
+to a peer, a blocker you hit. Not for every tool call; not for trivia.
+- summary: what you did, why, and what a peer would need to continue. 3–10 lines. Name
+  files, functions and commands concretely.
+- title: short headline (defaults to the first line of summary).
+- topics: 1–4 lowercase-kebab-case tags for the threads this touches (e.g. "auth",
+  "testing"). Reuse existing topics — call list_history_topics() first — so your entry
+  links to your peers' and to earlier days. Invent a new topic only for a new thread.
 
-### read_agent_history()
-Read your complete personal work history for this project.
+### read_agent_history(days?)   your own notes, newest day first (default: all)
+### read_cwd_history(days?)     every agent's notes in this instance (default: last 3 days)
+### list_history_topics()       topic names in the vault
+### read_history_topic(topic)   the topic note plus every linked entry — the fastest way
+                                 to catch up on one thread across days and agents
 
-### read_cwd_history()
-Read the full shared history of all work done by any agent in this Neovim instance.
-Use this when starting a new session to understand what has already been accomplished.
+Discipline: at the start of a task, read_cwd_history() and read_history_topic() for the
+topics you will touch; at the end, log_work() with those topics. If your CLI can run a
+subagent or background task, do the logging from one: hand it the summary, title and
+topics verbatim and have it make the log_work call, so the bookkeeping stays out of your
+main context. Fall back to calling log_work directly when you cannot. The hook injects
+today's entries and the topic list before each prompt.
 
 ### spawn_agent(name, system_prompt?, role?, user_notes?)
 Add an agent to the live workspace at runtime, or relaunch one that has exited:
@@ -216,7 +233,7 @@ Use this to parallelise work, or to bring back a peer whose terminal has exited.
 - When you start a new session, call read_cwd_history() to orient yourself.
 - Before starting a task, call list_agent_roles() and list_agent_statuses() to check
   whether a peer is better suited for it or is already working on it.
-- After meaningful work, call log_work() with a clear summary.
+- After meaningful work, call log_work() with a clear summary and the right topics.
 - When you receive messages in injected context, call read_messages() to clear them.
 - If a task falls outside your role, use send_message() to delegate it to the right peer.
 ]],
