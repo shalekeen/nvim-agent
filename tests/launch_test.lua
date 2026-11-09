@@ -246,6 +246,45 @@ local cf = io.open(sess.active_dir .. "/config.json", "w")
 cf:write('{"inbox_wakeups": false, "history": "fresh"}')
 cf:close()
 check("config edit in the mirror is read live", S.config(sess).inbox_wakeups == false and S.config(sess).history == "fresh")
+
+-- Wakeup evaluation with a fake clock (the real timer ticks every 5 s).
+local AC = require("nvim-agent.autocmds")
+check("evaluate_wakeup: disabled when inbox_wakeups=false", AC.evaluate_wakeup(sess, 0) == "disabled")
+cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write('{"inbox_wakeups": true, "inbox_wakeup_interval": 300}')
+cf:close()
+local trig_dir = W.instance_runtime_dir(cwd) .. "/triggers"
+vim.fn.mkdir(trig_dir, "p")
+local trig = io.open(trig_dir .. "/helper.md", "w")
+trig:write("[x] Triggered\n")
+trig:close()
+check("evaluate_wakeup: first observation is a baseline", AC.evaluate_wakeup(sess, 0) == "baseline")
+check("evaluate_wakeup: 30 s later is still waiting on a 300 s interval", AC.evaluate_wakeup(sess, 30 * 1000) == "waiting")
+check("evaluate_wakeup: 299 s later is still waiting", AC.evaluate_wakeup(sess, 299 * 1000) == "waiting")
+local r_due = AC.evaluate_wakeup(sess, 300 * 1000)
+check("evaluate_wakeup: at 300 s, idle + pending trigger → nudged", r_due == "nudged", r_due)
+check("nudge consumed the trigger file", vim.fn.getfsize(trig_dir .. "/helper.md") == 0)
+check("evaluate_wakeup: next period with nothing pending → quiet", AC.evaluate_wakeup(sess, 600 * 1000) == "quiet")
+-- Output during the interval counts as active, no nudge even if pending.
+trig = io.open(trig_dir .. "/helper.md", "w")
+trig:write("[y] Triggered\n")
+trig:close()
+check("evaluate_wakeup: terminal output during the interval → active, not nudged", (function()
+	-- Terminal buffers can't be edited from Lua, so simulate "the terminal
+	-- printed something" by making the stored tick differ from the live one.
+	AC._wake_state[sess.id].tick = -1
+	return AC.evaluate_wakeup(sess, 900 * 1000) == "active"
+end)())
+check("evaluate_wakeup: inactive session", AC.evaluate_wakeup({ id = "ghost", name = "ghost", active_dir = sess.active_dir }, 0) == "inactive")
+-- Shorter interval changes cadence live.
+cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write('{"inbox_wakeups": true, "inbox_wakeup_interval": 5}')
+cf:close()
+check("evaluate_wakeup: a 5 s interval is due after 5 s", AC.evaluate_wakeup(sess, 905 * 1000) ~= "waiting")
+os.remove(trig_dir .. "/helper.md")
+cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write('{"inbox_wakeups": false, "history": "fresh"}')
+cf:close()
 L.sync_session_file(sess, "config.json", true)
 check("config.json is saved as a workspace override", read(cwd .. "/.nvim-agent/workspaces/ephemeral/helper/config.json") ~= nil)
 

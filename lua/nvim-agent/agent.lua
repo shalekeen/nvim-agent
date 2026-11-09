@@ -85,19 +85,25 @@ end
 --- override it per member. Unknown keys are ignored; invalid values fall
 --- back to these defaults.
 ---
----   inbox_wakeups  boolean  true  — every 30 s, nudge an idle agent whose
----                                   mailbox or trigger file has new content
----                                   ("You have pending messages..."). Set
----                                   false for agents that should only act
----                                   when addressed directly.
----   history        string   "persistent" | "fresh" — "fresh" starts an empty
----                                   work-history file every time the agent's
----                                   CLI launches (restart included), instead
----                                   of appending to the instance's log.
+---   inbox_wakeups          boolean  true — nudge an idle agent whose mailbox
+---                                   or trigger file has new content ("You
+---                                   have pending messages..."). Set false
+---                                   for agents that should only act when
+---                                   addressed directly.
+---   inbox_wakeup_interval  number   30   — seconds between those checks for
+---                                   this agent (minimum 5). E.g. 300 for a
+---                                   nudge at most every five minutes.
+---   history                string   "persistent" | "fresh" — "fresh" starts
+---                                   an empty work-history file every time
+---                                   the agent's CLI launches (restart
+---                                   included), instead of appending.
 M.DEFAULT_CONFIG = {
 	inbox_wakeups = true,
+	inbox_wakeup_interval = 30,
 	history = "persistent",
 }
+
+M.MIN_WAKEUP_INTERVAL = 5
 
 --- Read and validate an agent config from a directory (an agent's library
 --- dir or a session's active_dir). Missing file → defaults.
@@ -115,6 +121,9 @@ function M.read_config(dir)
 	end
 	if type(data.inbox_wakeups) == "boolean" then
 		out.inbox_wakeups = data.inbox_wakeups
+	end
+	if type(data.inbox_wakeup_interval) == "number" and data.inbox_wakeup_interval >= M.MIN_WAKEUP_INTERVAL then
+		out.inbox_wakeup_interval = math.floor(data.inbox_wakeup_interval)
 	end
 	if data.history == "fresh" or data.history == "persistent" then
 		out.history = data.history

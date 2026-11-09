@@ -2,6 +2,95 @@ local M = {}
 
 local uv = vim.uv or vim.loop
 
+--- Timer granularity. Per-agent intervals are multiples of this in effect;
+--- agent.MIN_WAKEUP_INTERVAL keeps intervals at or above it.
+M.TICK_MS = 5000
+
+--- Decide, for one session at time `now` (ms, monotonic), whether to nudge
+--- it. Returns a short reason string, for tests and debugging:
+---   "disabled"  inbox_wakeups = false
+---   "inactive"  no running terminal
+---   "baseline"  first observation; records the current changedtick
+---   "waiting"   its interval has not elapsed since the last evaluation
+---   "active"    terminal produced output during the interval
+---   "quiet"     idle but nothing pending
+---   "nudged"    idle with a pending trigger or new mail → wake sent
+--- @param sess table
+--- @param now number
+--- @return string
+function M.evaluate_wakeup(sess, now)
+	local session_mod = require("nvim-agent.session")
+	local state = M._wake_state
+
+	local bufnr = sess.bufnr
+	if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) or not sess.jobid then
+		state[sess.id] = nil
+		return "inactive"
+	end
+
+	local cfg = session_mod.config(sess)
+	if not cfg.inbox_wakeups then
+		state[sess.id] = nil
+		return "disabled"
+	end
+
+	local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+	local st = state[sess.id]
+	if not st then
+		state[sess.id] = { tick = tick, at = now, handled_msg_mtime = nil }
+		return "baseline"
+	end
+	if now - st.at < cfg.inbox_wakeup_interval * 1000 then
+		return "waiting"
+	end
+
+	local prev_tick = st.tick
+	st.tick = tick
+	st.at = now
+	if tick ~= prev_tick then
+		return "active"
+	end
+
+	-- Scoped to this Neovim instance's runtime tree for the project the
+	-- session was launched in (not the current :cd): a trigger written for
+	-- "main" in another instance must not wake ours.
+	local instance_dir = require("nvim-agent.workspace").instance_runtime_dir(sess.cwd or vim.fn.getcwd())
+	local trigger_file = instance_dir .. "/triggers/" .. sess.name .. ".md"
+	local msg_file = instance_dir .. "/messages/" .. sess.name .. ".md"
+	local has_trigger = vim.fn.getfsize(trigger_file) > 0
+
+	local msg_stat = uv.fs_stat(msg_file)
+	local msg_mtime = nil
+	if msg_stat and (msg_stat.size or 0) > 0 and msg_stat.mtime then
+		msg_mtime = (msg_stat.mtime.sec or 0) * 1e9 + (msg_stat.mtime.nsec or 0)
+	end
+	local has_new_messages = msg_mtime ~= nil and msg_mtime ~= st.handled_msg_mtime
+
+	if not has_trigger and not has_new_messages then
+		return "quiet"
+	end
+
+	require("nvim-agent.terminal").send(sess.id, "You have pending messages or tasks. Please continue your work.\r")
+	if has_trigger then
+		-- Lock the trigger file: an MCP-side trigger_agent may be appending
+		-- right now. Short retry budget so the timer never stalls; on lock
+		-- failure we still truncate (the agent still has the mail itself).
+		local ok_lock, filelock = pcall(require, "nvim-agent.mcp.filelock")
+		local got = ok_lock and filelock.acquire(trigger_file, { agent = "nvim-autocmd", retries = 1, delay_ms = 50 })
+		local f = io.open(trigger_file, "w")
+		if f then
+			f:close()
+		end
+		if got then
+			filelock.release(trigger_file)
+		end
+	end
+	if has_new_messages then
+		st.handled_msg_mtime = msg_mtime
+	end
+	return "nudged"
+end
+
 function M.register()
 	-- Idempotent: if register() is invoked twice (e.g. plugin reload), the old
 	-- timers must be stopped before we allocate new ones.
@@ -13,8 +102,7 @@ function M.register()
 			M[timer_key] = nil
 		end
 	end
-	M._session_ticks = nil
-	M._handled_msg_mtime = nil
+	M._wake_state = nil
 
 	local group = vim.api.nvim_create_augroup("NvimAgent", { clear = true })
 	local config = require("nvim-agent.config")
@@ -113,78 +201,23 @@ function M.register()
 		desc = "nvim-agent: save edited context file as a workspace override",
 	})
 
-	-- Continuation timer: every 30 s, check each agent terminal.
-	-- When a terminal has been idle (changedtick unchanged) and has a pending
-	-- trigger or message file, send a wakeup to resume inference.
-	M._session_ticks = {}
-	M._handled_msg_mtime = {}
+	-- Continuation timer. Ticks every TICK_MS and evaluates each session on
+	-- ITS OWN period (config.json: inbox_wakeup_interval, default 30 s). A
+	-- session that has produced no terminal output for a whole period and
+	-- has a pending trigger or new mail is nudged to resume.
+	M._wake_state = {}
 	M._continuation_timer = uv.new_timer()
 	M._continuation_timer:start(
-		30000,
-		30000,
+		M.TICK_MS,
+		M.TICK_MS,
 		vim.schedule_wrap(function()
 			local ok, session_mod = pcall(require, "nvim-agent.session")
 			if not ok then
 				return
 			end
-
-			local terminal = require("nvim-agent.terminal")
-			local ws = require("nvim-agent.workspace")
-
+			local now = uv.now()
 			for _, sess in ipairs(session_mod.list()) do
-				-- Scoped to this Neovim instance's runtime tree for the project
-				-- the session was launched in (not the current :cd): a trigger
-				-- written for "main" in another instance must not wake ours.
-				local instance_dir = ws.instance_runtime_dir(sess.cwd or vim.fn.getcwd())
-				local trigger_dir = instance_dir .. "/triggers"
-				local msg_dir = instance_dir .. "/messages"
-				local bufnr = sess.bufnr
-				if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) or not sess.jobid then
-					M._session_ticks[sess.id] = nil
-					M._handled_msg_mtime[sess.id] = nil
-				else
-					local tick = vim.api.nvim_buf_get_changedtick(bufnr)
-					local prev_tick = M._session_ticks[sess.id]
-					M._session_ticks[sess.id] = tick
-
-					-- Agents can opt out of the periodic nudge (config.json:
-					-- inbox_wakeups=false); direct trigger_agent wakes still work.
-					if prev_tick and tick == prev_tick and session_mod.config(sess).inbox_wakeups then
-						local trigger_file = trigger_dir .. "/" .. sess.name .. ".md"
-						local msg_file = msg_dir .. "/" .. sess.name .. ".md"
-						local has_trigger = vim.fn.getfsize(trigger_file) > 0
-
-						local msg_stat = uv.fs_stat(msg_file)
-						local msg_mtime = nil
-						if msg_stat and (msg_stat.size or 0) > 0 and msg_stat.mtime then
-							msg_mtime = (msg_stat.mtime.sec or 0) * 1e9 + (msg_stat.mtime.nsec or 0)
-						end
-						local has_new_messages = msg_mtime ~= nil and msg_mtime ~= M._handled_msg_mtime[sess.id]
-
-						if has_trigger or has_new_messages then
-							terminal.send(sess.id, "You have pending messages or tasks. Please continue your work.\r")
-							if has_trigger then
-								-- Lock the trigger file: an MCP-side trigger_agent may
-								-- be appending right now. Short retry budget so the
-								-- timer never stalls; on lock failure we still truncate
-								-- (the agent still has the message in its mailbox).
-								local ok_lock, filelock = pcall(require, "nvim-agent.mcp.filelock")
-								local got = ok_lock
-									and filelock.acquire(trigger_file, { agent = "nvim-autocmd", retries = 1, delay_ms = 50 })
-								local f = io.open(trigger_file, "w")
-								if f then
-									f:close()
-								end
-								if got then
-									filelock.release(trigger_file)
-								end
-							end
-							if has_new_messages then
-								M._handled_msg_mtime[sess.id] = msg_mtime
-							end
-						end
-					end
-				end
+				M.evaluate_wakeup(sess, now)
 			end
 		end)
 	)

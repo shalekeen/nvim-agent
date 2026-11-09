@@ -47,7 +47,7 @@ local function pin_agent_buffer(bufnr)
 			return
 		end
 		local ok, barbar_state = pcall(require, "barbar.state")
-		if ok and barbar_state then
+		if ok and type(barbar_state) == "table" and barbar_state.get_buffer_data then
 			local data = barbar_state.get_buffer_data(bufnr)
 			if not data.pinned then
 				data.pinned = true
