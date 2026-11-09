@@ -147,7 +147,9 @@ function M.register()
 					local prev_tick = M._session_ticks[sess.id]
 					M._session_ticks[sess.id] = tick
 
-					if prev_tick and tick == prev_tick then
+					-- Agents can opt out of the periodic nudge (config.json:
+					-- inbox_wakeups=false); direct trigger_agent wakes still work.
+					if prev_tick and tick == prev_tick and session_mod.config(sess).inbox_wakeups then
 						local trigger_file = trigger_dir .. "/" .. sess.name .. ".md"
 						local msg_file = msg_dir .. "/" .. sess.name .. ".md"
 						local has_trigger = vim.fn.getfsize(trigger_file) > 0

@@ -890,9 +890,9 @@ local function open_agent_files(dir)
 	vim.cmd("split " .. vim.fn.fnameescape(dir .. "/user_notes.md"))
 	vim.cmd("wincmd l")
 	vim.cmd("split " .. vim.fn.fnameescape(dir .. "/persistent_dirs.json"))
-	vim.cmd("wincmd =")
-	vim.cmd("wincmd h")
-	vim.cmd("wincmd k")
+	vim.cmd("botright split " .. vim.fn.fnameescape(dir .. "/config.json"))
+	vim.cmd("resize 6")
+	vim.cmd("wincmd t")
 end
 
 --- Edit a library agent's files. Live sessions built from it keep their

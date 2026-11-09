@@ -175,6 +175,15 @@ function M.find_by_bufnr(bufnr)
 	return nil
 end
 
+--- The session's effective runtime config (agent config.json + workspace
+--- override, as mirrored into active_dir). Read fresh each call so an edit
+--- to the mirror takes effect without a relaunch.
+--- @param sess table
+--- @return table  see agent.DEFAULT_CONFIG
+function M.config(sess)
+	return require("nvim-agent.agent").read_config(sess and sess.active_dir)
+end
+
 --- True while the CLI process is alive.
 --- @param sess table
 --- @return boolean

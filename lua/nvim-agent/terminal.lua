@@ -178,6 +178,16 @@ local function launch_session_in_window(sess, win, adapter)
 	vim.api.nvim_set_current_win(win)
 
 	local cwd = sess.cwd or vim.fn.getcwd()
+
+	-- config.json: history = "fresh" → start an empty work log on every
+	-- launch of this agent's CLI (initial launch and relaunch alike).
+	if require("nvim-agent.session").config(sess).history == "fresh" then
+		local hist = require("nvim-agent.workspace").instance_runtime_dir(cwd) .. "/history/" .. sess.name .. ".md"
+		if vim.fn.filereadable(hist) == 1 then
+			vim.fn.delete(hist)
+		end
+	end
+
 	-- Identity of THIS launch's job; see the on_exit guard below.
 	local job_ref = {}
 	sess.jobid = vim.fn.termopen(adapter:get_cmd(sess), {

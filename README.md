@@ -100,6 +100,21 @@ vim.opt.statusline = "%f %m%r  %{%v:lua.require('nvim-agent').statusline()%}%=%y
 | `user_notes.md` | Standing notes and constraints. |
 | `persistent_dirs.json` | Pinned code paths: `[{ "tag", "path", "description" }]`. |
 | `permissions.json` | Optional, adapter-specific tool permissions (see the adapter README). |
+| `config.json` | Runtime behaviour of the agent (see below). |
+
+**Agent runtime config.** `config.json` is loaded alongside the other files, mirrored into the session, and overridable per workspace like everything else (`:NvimAgent edit config` edits the live member's copy and saves it as an override). Keys:
+
+```json
+{
+  "inbox_wakeups": true,
+  "history": "persistent"
+}
+```
+
+- `inbox_wakeups` (default `true`): every 30 seconds nvim-agent nudges an idle agent whose mailbox or trigger file has new content so it resumes work. Set `false` for an agent that should act only when addressed directly; `trigger_agent` wakes still reach it, and messages still arrive in its context on its next prompt.
+- `history` (default `"persistent"`): `"fresh"` starts an empty work-history file every time the agent's CLI launches, restarts included, instead of appending to the instance's log. Use it for agents whose past work should never colour a new session.
+
+Unknown keys are ignored and invalid values fall back to the defaults. Edits to the live copy take effect without a relaunch for `inbox_wakeups`; `history` is applied at the next launch.
 
 Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/agents/spawned/<name>/` and are listed in their own section so they don't crowd out your own; copy one with `:NvimAgent agent copy` to adopt it. Copying is also how you make a permanently different variant of an agent. For project-specific tweaks you don't need a copy: see overrides below.
 
@@ -172,8 +187,8 @@ Loading a workspace while another is live asks before stopping the running agent
 
 :NvimAgent session list | switch [name|n]
 
-:NvimAgent edit prompt | notes | dirs | role     " edit the current session's files (saved as a workspace override)
-:NvimAgent view prompt | notes | dirs | role
+:NvimAgent edit prompt | notes | dirs | role | config   " edit the current session's files (saved as a workspace override)
+:NvimAgent view prompt | notes | dirs | role | config
 :NvimAgent dir add <tag> <path> <description> | dir remove <tag>
 :NvimAgent tmux add [lines] | clear | view
 :NvimAgent history agent [name] | workspace | project

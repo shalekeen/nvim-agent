@@ -264,6 +264,15 @@ function M.view_persistent_dirs(active_dir)
 end
 
 --- The role guides the agent and is what peers see when delegating.
+--- Runtime config (inbox_wakeups, history). Saved as a workspace override
+--- like the other files; see agent.DEFAULT_CONFIG for the keys.
+function M.edit_agent_config(active_dir)
+	edit_context_file(active_dir, "config.json")
+end
+function M.view_agent_config(active_dir)
+	view_context_file(active_dir, "config.json", "Agent Config (Read-Only)", "json", M.edit_agent_config)
+end
+
 function M.edit_role(active_dir)
 	edit_context_file(active_dir, "role.md")
 end

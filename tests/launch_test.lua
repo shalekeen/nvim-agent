@@ -237,6 +237,53 @@ end)
 check("library agent running", S.is_running(S.get_by_name("lib-agent")))
 
 -- ---------------------------------------------------------------------------
+-- 4c. Agent runtime config: inbox_wakeups is read live from the mirror;
+--     history="fresh" truncates the work log on every launch.
+-- ---------------------------------------------------------------------------
+
+check("default config: wakeups on, history persistent", S.config(sess).inbox_wakeups == true and S.config(sess).history == "persistent")
+local cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write('{"inbox_wakeups": false, "history": "fresh"}')
+cf:close()
+check("config edit in the mirror is read live", S.config(sess).inbox_wakeups == false and S.config(sess).history == "fresh")
+L.sync_session_file(sess, "config.json", true)
+check("config.json is saved as a workspace override", read(cwd .. "/.nvim-agent/workspaces/ephemeral/helper/config.json") ~= nil)
+
+-- history=fresh: an existing log is wiped when the CLI (re)launches.
+local hist_path = W.instance_runtime_dir(cwd) .. "/history/helper.md"
+local hf = io.open(hist_path, "w")
+hf:write("old work\n")
+hf:close()
+L.stop_agent("helper")
+vim.wait(3000, function()
+	return sess.state == "exited"
+end)
+L.restart_agent("helper", cwd)
+vim.wait(2000, function()
+	return sess.jobid ~= nil
+end)
+check("history=fresh wipes the work log on relaunch", read(hist_path) == nil)
+
+-- history=persistent keeps it.
+cf = io.open(sess.active_dir .. "/config.json", "w")
+cf:write('{"inbox_wakeups": true, "history": "persistent"}')
+cf:close()
+L.sync_session_file(sess, "config.json", true)
+hf = io.open(hist_path, "w")
+hf:write("kept work\n")
+hf:close()
+L.stop_agent("helper")
+vim.wait(3000, function()
+	return sess.state == "exited"
+end)
+L.restart_agent("helper", cwd)
+vim.wait(2000, function()
+	return sess.jobid ~= nil
+end)
+check("history=persistent keeps the work log across relaunch", read(hist_path) == "kept work\n")
+L.reset_overrides("helper", "config.json", cwd)
+
+-- ---------------------------------------------------------------------------
 -- 5b. show_all / hide_all arrange and hide existing terminals without
 --     launching or stopping anything.
 -- ---------------------------------------------------------------------------

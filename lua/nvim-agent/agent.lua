@@ -34,7 +34,9 @@ M.AGENT_FILES = {
 	"user_notes.md",
 	"persistent_dirs.json",
 	"permissions.json",
+	"config.json",
 }
+
 
 M.SPAWNED_DIRNAME = "spawned"
 
@@ -76,6 +78,48 @@ end
 
 local function is_blank(s)
 	return s == nil or s:match("^%s*$") ~= nil
+end
+
+--- Runtime characteristics an agent definition can set in config.json.
+--- Mirrored into the session like every other file, so a workspace can
+--- override it per member. Unknown keys are ignored; invalid values fall
+--- back to these defaults.
+---
+---   inbox_wakeups  boolean  true  — every 30 s, nudge an idle agent whose
+---                                   mailbox or trigger file has new content
+---                                   ("You have pending messages..."). Set
+---                                   false for agents that should only act
+---                                   when addressed directly.
+---   history        string   "persistent" | "fresh" — "fresh" starts an empty
+---                                   work-history file every time the agent's
+---                                   CLI launches (restart included), instead
+---                                   of appending to the instance's log.
+M.DEFAULT_CONFIG = {
+	inbox_wakeups = true,
+	history = "persistent",
+}
+
+--- Read and validate an agent config from a directory (an agent's library
+--- dir or a session's active_dir). Missing file → defaults.
+--- @param dir string
+--- @return table  { inbox_wakeups = boolean, history = "persistent"|"fresh" }
+function M.read_config(dir)
+	local out = vim.deepcopy(M.DEFAULT_CONFIG)
+	local raw = dir and read_file(dir .. "/config.json")
+	if not raw or raw:match("^%s*$") then
+		return out
+	end
+	local ok, data = pcall(vim.json.decode, raw)
+	if not ok or type(data) ~= "table" then
+		return out
+	end
+	if type(data.inbox_wakeups) == "boolean" then
+		out.inbox_wakeups = data.inbox_wakeups
+	end
+	if data.history == "fresh" or data.history == "persistent" then
+		out.history = data.history
+	end
+	return out
 end
 
 ------------------------------------------------------------------------
@@ -242,6 +286,7 @@ function M.create(name, opts)
 	write_file(dir .. "/system_prompt.md", opts.system_prompt or cfg.default_system_prompt or "")
 	write_file(dir .. "/user_notes.md", opts.user_notes or DEFAULT_NOTES)
 	write_file(dir .. "/persistent_dirs.json", opts.persistent_dirs or "[]")
+	write_file(dir .. "/config.json", vim.json.encode(M.DEFAULT_CONFIG))
 	return true
 end
 

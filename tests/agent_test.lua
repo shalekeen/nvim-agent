@@ -67,6 +67,23 @@ assert_eq("role.md written (trailing newline)", read(base_dir .. "/agents/Alice/
 assert_eq("system_prompt.md seeded from default_system_prompt", read(base_dir .. "/agents/Alice/system_prompt.md"), "DEFAULT_PROMPT")
 check("user_notes.md seeded", (read(base_dir .. "/agents/Alice/user_notes.md") or ""):find("User Notes") ~= nil)
 assert_eq("persistent_dirs.json seeded", read(base_dir .. "/agents/Alice/persistent_dirs.json"), "[]")
+check("config.json seeded with defaults", vim.deep_equal(vim.json.decode(read(base_dir .. "/agents/Alice/config.json")), agent.DEFAULT_CONFIG))
+check("AGENT_FILES includes config.json", vim.tbl_contains(agent.AGENT_FILES, "config.json"))
+
+-- read_config: defaults, partial, invalid, garbage, missing.
+local cfg_dir = sandbox .. "/cfg"
+vim.fn.mkdir(cfg_dir, "p")
+check("read_config on a missing file gives defaults", vim.deep_equal(agent.read_config(cfg_dir), agent.DEFAULT_CONFIG))
+write(cfg_dir .. "/config.json", '{"inbox_wakeups": false}')
+local c1 = agent.read_config(cfg_dir)
+check("read_config applies a partial file over defaults", c1.inbox_wakeups == false and c1.history == "persistent")
+write(cfg_dir .. "/config.json", '{"inbox_wakeups": "nope", "history": "weekly", "extra": 1}')
+check("read_config ignores invalid values and unknown keys", vim.deep_equal(agent.read_config(cfg_dir), agent.DEFAULT_CONFIG))
+write(cfg_dir .. "/config.json", '{"history": "fresh"}')
+check("read_config accepts history=fresh", agent.read_config(cfg_dir).history == "fresh")
+write(cfg_dir .. "/config.json", "{not json")
+check("read_config survives garbage", vim.deep_equal(agent.read_config(cfg_dir), agent.DEFAULT_CONFIG))
+check("read_config(nil) gives defaults", vim.deep_equal(agent.read_config(nil), agent.DEFAULT_CONFIG))
 
 local ok_dup, err_dup = agent.create("Alice", { role = "again" })
 check("duplicate create fails", not ok_dup and err_dup:find("already exists") ~= nil, tostring(err_dup))

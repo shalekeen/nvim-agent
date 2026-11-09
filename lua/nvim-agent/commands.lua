@@ -32,8 +32,8 @@ local OPEN_SUBS = { "all" }
 local WORKSPACE_SUBS = { "new", "load", "list", "remove", "rename", "save-as" }
 local AGENT_SUBS = { "add", "remove", "stop", "restart", "define", "copy", "edit", "delete", "list", "push", "overrides", "reset" }
 local SESSION_SUBS = { "list", "switch" }
-local EDIT_SUBS = { "prompt", "notes", "dirs", "role" }
-local VIEW_SUBS = { "prompt", "notes", "dirs", "role" }
+local EDIT_SUBS = { "prompt", "notes", "dirs", "role", "config" }
+local VIEW_SUBS = { "prompt", "notes", "dirs", "role", "config" }
 local DIR_SUBS = { "add", "remove" }
 local ROLE_SUBS = { "edit", "view" }
 local TMUX_SUBS = { "add", "clear", "view" }
@@ -246,8 +246,10 @@ local function dispatch(opts)
 			agent.edit_persistent_dirs()
 		elseif action == "role" then
 			agent.edit_role()
+		elseif action == "config" then
+			agent.edit_agent_config()
 		else
-			usage("edit what? (prompt|notes|dirs|role)")
+			usage("edit what? (prompt|notes|dirs|role|config)")
 		end
 	elseif sub == "view" then
 		if action == "prompt" then
@@ -258,8 +260,10 @@ local function dispatch(opts)
 			agent.view_persistent_dirs()
 		elseif action == "role" then
 			agent.view_role()
+		elseif action == "config" then
+			agent.view_agent_config()
 		else
-			usage("view what? (prompt|notes|dirs|role)")
+			usage("view what? (prompt|notes|dirs|role|config)")
 		end
 	elseif sub == "dir" then
 		if action == "add" then
