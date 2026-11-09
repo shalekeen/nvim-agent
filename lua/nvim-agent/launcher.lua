@@ -123,6 +123,7 @@ local function create_session_for_entry(manifest, entry, cwd)
 		notify("failed to create session '" .. entry.name .. "': " .. (err or "?"), vim.log.levels.ERROR)
 		return nil
 	end
+	sess.workspace = manifest.name
 	local ok, lerr = agent_mod().load(entry.agent, sess.active_dir)
 	if not ok then
 		notify("'" .. entry.name .. "': " .. (lerr or "agent load failed") .. " — launching with defaults", vim.log.levels.WARN)

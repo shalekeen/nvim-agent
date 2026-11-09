@@ -129,7 +129,35 @@ check("read_topic returns the topic note plus every linked entry in full",
 check("read_topic unknown → nil", H.read_topic(vault, "nope") == nil)
 
 -- ---------------------------------------------------------------------------
--- 4. forget_agent (history = "fresh")
+-- 3b. Instance attribution and instance-scoped forgetting: the vault is
+--     shared by every Neovim running the workspace.
+-- ---------------------------------------------------------------------------
+
+local vault2 = H.vault_dir(sandbox .. "/ws")
+local ra = H.log(vault2, "engineer", "from window A", { topics = { "shared" }, now = day1, instance = "aaaaaaaa-0000-4000-8000-000000000001" })
+local rb = H.log(vault2, "engineer", "from window B", { topics = { "shared" }, now = day1_later, instance = "bbbbbbbb-0000-4000-8000-000000000002" })
+local ra_note = read(ra.path) or ""
+check("entry frontmatter records the writing instance", ra_note:find("\ninstance: aaaaaaaa-0000-4000-8000-000000000001\n", 1, true) ~= nil, ra_note)
+check("entry body shows the short instance id", ra_note:find("**Instance:** aaaaaaaa", 1, true) ~= nil)
+check("index and topic lines carry the short instance id", (read(H.agent_index(vault2, "engineer")) or ""):find("· aaaaaaaa", 1, true) ~= nil and (read(H.topic_note(vault2, "shared")) or ""):find("· bbbbbbbb", 1, true) ~= nil)
+check("entry without instance has no instance field", (read(r1.path) or ""):find("instance:", 1, true) == nil)
+
+H.forget_agent(vault2, "engineer", "aaaaaaaa-0000-4000-8000-000000000001")
+check("scoped forget removes only that instance's entry", read(ra.path) == nil and read(rb.path) ~= nil)
+local idx2 = read(H.agent_index(vault2, "engineer")) or ""
+check("scoped forget drops the removed entry from the index, keeps the other", idx2:find("from-window-a", 1, true) == nil and idx2:find("from-window-b", 1, true) ~= nil, idx2)
+local tsh = read(H.topic_note(vault2, "shared")) or ""
+check("scoped forget drops the removed entry from topics, keeps the other", tsh:find("from-window-a", 1, true) == nil and tsh:find("from-window-b", 1, true) ~= nil, tsh)
+H.forget_agent(vault2, "engineer", "bbbbbbbb-0000-4000-8000-000000000002")
+check("forgetting the last instance's entries removes index, topic and agent dir", read(H.agent_index(vault2, "engineer")) == nil and read(H.topic_note(vault2, "shared")) == nil and vim.fn.isdirectory(H.agent_dir(vault2, "engineer")) == 0)
+check("scoped forget for an unknown instance is a no-op", (function()
+	H.log(vault2, "qa", "x", { now = day2, instance = "cccccccc-0000-4000-8000-000000000003" })
+	H.forget_agent(vault2, "qa", "dddddddd-0000-4000-8000-000000000004")
+	return H.read_agent(vault2, "qa") ~= nil
+end)())
+
+-- ---------------------------------------------------------------------------
+-- 4. forget_agent without an instance (removes everything)
 -- ---------------------------------------------------------------------------
 
 H.forget_agent(vault, "engineer")

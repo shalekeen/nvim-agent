@@ -111,6 +111,16 @@ function M.manifest_path(name, cwd)
 	return M.workspaces_dir(cwd) .. "/" .. name .. "/" .. M.MANIFEST_FILE
 end
 
+--- The workspace's work-history vault (an Obsidian folder). Shared by every
+--- agent in the workspace and by every Neovim instance running it; persists
+--- across restarts and travels with the workspace on rename.
+--- @param name string
+--- @param cwd string|nil
+--- @return string
+function M.history_dir(name, cwd)
+	return M.workspaces_dir(cwd) .. "/" .. name .. "/history"
+end
+
 --- True when the project has ever had a workspace (used by the startup flow
 --- to decide between "first launch here" and "show the picker").
 --- @param cwd string|nil

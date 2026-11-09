@@ -113,7 +113,8 @@ function info.launch_and_plant()
 
 	local function put(p, c) vim.fn.mkdir(vim.fn.fnamemodify(p, ":h"), "p"); local f = assert(io.open(p, "w")); f:write(c); f:close() end
 	put(inst .. "/messages/engineer.md", "MSG_" .. MARK .. "\n")
-	put(inst .. "/history/agents/engineer/" .. os.date("%Y-%m-%d") .. "/10-00-hist.md", "HIST_" .. MARK .. "\n")
+	-- Work history is WORKSPACE-level and shared across instances by design.
+	put(W.history_dir("team", cwd) .. "/agents/engineer/" .. os.date("%Y-%m-%d") .. "/10-00-hist-" .. MARK .. ".md", "HIST_" .. MARK .. "\n")
 	put(inst .. "/status/peer-" .. MARK .. ".json", '{"agent":"peer-' .. MARK .. '","role":"ROLE_' .. MARK .. '","current_task":"TASK_' .. MARK .. '","updated_at":"x"}')
 	put(sess.process_dir .. "/tmux_captures.json", '{"captures":[{"content":"TMUX_' .. MARK .. '"}]}')
 	-- A workspace override made from this instance is workspace config and
@@ -217,6 +218,9 @@ if have_proc then
 		and A.env.NVIM_AGENT_PROCESS_DIR ~= B.env.NVIM_AGENT_PROCESS_DIR
 		and A.env.NVIM_AGENT_ACTIVE_DIR ~= B.env.NVIM_AGENT_ACTIVE_DIR
 		and A.env.NVIM_AGENT_INSTANCE_ID ~= B.env.NVIM_AGENT_INSTANCE_ID)
+	check("A and B CLI environments AGREE on the workspace history vault (shared by design)",
+		A.env.NVIM_AGENT_HISTORY_DIR ~= nil and A.env.NVIM_AGENT_HISTORY_DIR == B.env.NVIM_AGENT_HISTORY_DIR
+		and A.env.NVIM_AGENT_HISTORY_DIR == cwd .. "/.nvim-agent/workspaces/team/history", A.env.NVIM_AGENT_HISTORY_DIR)
 end
 
 -- ---------------------------------------------------------------------------
@@ -275,17 +279,17 @@ if hook then
 	local cmd = string.format(
 		"NVIM_AGENT_ACTIVE_DIR=%s NVIM_AGENT_PROCESS_DIR=%s NVIM_AGENT_CWD=%s NVIM_AGENT_RUNTIME_DIR=%s bash %s 2>&1",
 		vim.fn.shellescape(A.active_dir), vim.fn.shellescape(A.process_dir), vim.fn.shellescape(cwd), vim.fn.shellescape(A.runtime_dir), vim.fn.shellescape(hook_path)
-	)
+	):gsub("NVIM_AGENT_RUNTIME_DIR=", "NVIM_AGENT_HISTORY_DIR=" .. vim.fn.shellescape(cwd .. "/.nvim-agent/workspaces/team/history") .. " NVIM_AGENT_RUNTIME_DIR=", 1)
 	local out = vim.fn.system(cmd)
 	check("hook: role from the shared library agent injected", out:find("shared_role", 1, true) ~= nil)
 	check("hook: A's notes injected", out:find("NOTES_A", 1, true) ~= nil)
 	check("hook: A's mailbox injected", out:find("MSG_A", 1, true) ~= nil)
 	check("hook: A's history injected", out:find("HIST_A", 1, true) ~= nil)
+	check("hook: B's history ALSO injected — the vault is workspace-wide by design", out:find("HIST_B", 1, true) ~= nil)
 	check("hook: A's peers injected (planted peer + qa-A)", out:find("peer-A", 1, true) ~= nil and out:find("Agent: qa-A", 1, true) ~= nil)
 	check("hook: A's tmux captures injected", out:find("TMUX_A", 1, true) ~= nil)
 	check("hook: no B notes", out:find("NOTES_B", 1, true) == nil)
 	check("hook: no B mailbox", out:find("MSG_B", 1, true) == nil)
-	check("hook: no B history", out:find("HIST_B", 1, true) == nil)
 	check("hook: no B peers (planted peer or qa-B)", out:find("peer-B", 1, true) == nil and out:find("qa-B", 1, true) == nil)
 	check("hook: no B tmux captures", out:find("TMUX_B", 1, true) == nil)
 end

@@ -322,12 +322,19 @@ cf:close()
 L.sync_session_file(sess, "config.json", true)
 check("config.json is saved as a workspace override", read(cwd .. "/.nvim-agent/workspaces/ephemeral/helper/config.json") ~= nil)
 
--- history=fresh: the agent's vault notes are wiped when the CLI (re)launches.
-local hist_path = W.instance_runtime_dir(cwd) .. "/history/agents/helper/" .. os.date("%Y-%m-%d") .. "/10-00-old-work.md"
-vim.fn.mkdir(vim.fn.fnamemodify(hist_path, ":h"), "p")
+-- history=fresh: THIS instance's vault notes for the agent are wiped when the
+-- CLI (re)launches; another instance's notes in the shared vault survive.
+local hist_day = W.history_dir(W.EPHEMERAL, cwd) .. "/agents/helper/" .. os.date("%Y-%m-%d")
+local hist_path = hist_day .. "/10-00-old-work.md"
+local foreign_path = hist_day .. "/10-01-other-window.md"
+vim.fn.mkdir(hist_day, "p")
 local hf = io.open(hist_path, "w")
-hf:write("old work\n")
+hf:write("---\nagent: helper\ninstance: " .. S.instance_id .. "\n---\nold work\n")
 hf:close()
+hf = io.open(foreign_path, "w")
+hf:write("---\nagent: helper\ninstance: ffffffff-0000-4000-8000-000000000000\n---\nother window's work\n")
+hf:close()
+check("session knows its workspace", sess.workspace == W.EPHEMERAL)
 L.stop_agent("helper")
 vim.wait(3000, function()
 	return sess.state == "exited"
@@ -336,16 +343,17 @@ L.restart_agent("helper", cwd)
 vim.wait(2000, function()
 	return sess.jobid ~= nil
 end)
-check("history=fresh wipes the work log on relaunch", read(hist_path) == nil)
+check("history=fresh wipes this instance's entries on relaunch", read(hist_path) == nil)
+check("history=fresh leaves another instance's entries alone", read(foreign_path) ~= nil)
 
 -- history=persistent keeps it.
 cf = io.open(sess.active_dir .. "/config.json", "w")
 cf:write('{"inbox_wakeups": true, "history": "persistent"}')
 cf:close()
 L.sync_session_file(sess, "config.json", true)
-vim.fn.mkdir(vim.fn.fnamemodify(hist_path, ":h"), "p")
+vim.fn.mkdir(hist_day, "p")
 hf = io.open(hist_path, "w")
-hf:write("kept work\n")
+hf:write("---\nagent: helper\ninstance: " .. S.instance_id .. "\n---\nkept work\n")
 hf:close()
 L.stop_agent("helper")
 vim.wait(3000, function()
@@ -355,7 +363,7 @@ L.restart_agent("helper", cwd)
 vim.wait(2000, function()
 	return sess.jobid ~= nil
 end)
-check("history=persistent keeps the work log across relaunch", read(hist_path) == "kept work\n")
+check("history=persistent keeps the work log across relaunch", (read(hist_path) or ""):find("kept work", 1, true) ~= nil)
 L.reset_overrides("helper", "config.json", cwd)
 
 -- ---------------------------------------------------------------------------

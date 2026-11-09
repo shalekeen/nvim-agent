@@ -53,6 +53,7 @@ same session table. Fields you can rely on:
 | `session.id` | `string` | Compound ID `"<instance-id>_<name>"`. Unique across all running Neovims. |
 | `session.name` | `string` | Session name: the workspace manifest entry's name, what peers address. |
 | `session.agent` | `string` | The global agent (`~/.nvim-agent/agents/<agent>/`) this session mirrors. Usually equals `name`; differs when one workspace runs the same agent twice. |
+| `session.workspace` | `string` | Name of the workspace the session was launched from (its vault lives under that workspace's dir). |
 | `session.state` | `string` | `"created"`, `"running"` or `"exited"`. An exited session is still a workspace member and can be relaunched into the same `active_dir`. |
 | `session.instance_num` | `number` | Sequential 1-indexed creation order. Display ordering only. |
 | `session.instance_id` | `string` | UUID of the owning Neovim instance, minted once when nvim-agent loads. Also at `require("nvim-agent.session").instance_id`. |
@@ -182,6 +183,9 @@ If your CLI **supports MCP** (Claude Code does):
    - `NVIM_AGENT_CWD = vim.fn.getcwd()` (project root, e.g. for PROJECT.md)
    - `NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id`
    - `NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd())`
+   - `NVIM_AGENT_HISTORY_DIR = require("nvim-agent.workspace").history_dir(session.workspace, session.cwd)`
+     (the workspace's work-history vault — shared across instances, unlike
+     RUNTIME_DIR; required by the history tools)
      (this instance's peer-state root — **required** by every messaging /
      status / history tool; there is no fallback, so an adapter that forgets
      it gets loud errors rather than silent cross-instance leakage)
@@ -201,6 +205,7 @@ Example settings shape (Claude Code format):
                 NVIM_AGENT_CWD = vim.fn.getcwd(),
                 NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
                 NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(vim.fn.getcwd()),
+                NVIM_AGENT_HISTORY_DIR = require("nvim-agent.workspace").history_dir(session.workspace, session.cwd),
             },
         },
     },
@@ -301,7 +306,7 @@ Copy `TEMPLATE.lua` to `<your_cli>.lua` and work through this:
   - [ ] Nil-guards `session` and returns a safe default
 - [ ] `setup_session_mcp(session)` writes per-session config (if MCP-capable)
   - [ ] MCP server entry uses `vim.v.progpath -l <server.lua>`
-  - [ ] Env vars include `NVIM_AGENT_NVIM_ADDR`, `NVIM_AGENT_ACTIVE_DIR`, `NVIM_AGENT_PROCESS_DIR`, `NVIM_AGENT_CWD`, `NVIM_AGENT_INSTANCE_ID`, `NVIM_AGENT_RUNTIME_DIR`
+  - [ ] Env vars include `NVIM_AGENT_NVIM_ADDR`, `NVIM_AGENT_ACTIVE_DIR`, `NVIM_AGENT_PROCESS_DIR`, `NVIM_AGENT_CWD`, `NVIM_AGENT_INSTANCE_ID`, `NVIM_AGENT_RUNTIME_DIR`, `NVIM_AGENT_HISTORY_DIR`
   - [ ] Pre-allows `mcp__nvim-agent__*` so the agent doesn't get prompted per-tool
   - [ ] Registers the pre-prompt hook (if your CLI supports them)
 - [ ] `setup()` is idempotent — writing the same settings twice doesn't corrupt them

@@ -219,6 +219,10 @@ function M:setup_session_mcp(session)
 					NVIM_AGENT_BASE_DIR = config.get().base_dir,
 					NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
 					NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(session.cwd or vim.fn.getcwd()),
+					NVIM_AGENT_HISTORY_DIR = require("nvim-agent.workspace").history_dir(
+						session.workspace or (require("nvim-agent.workspace").get_current() or {}).name or require("nvim-agent.workspace").EPHEMERAL,
+						session.cwd or vim.fn.getcwd()
+					),
 				},
 			},
 		},
@@ -264,6 +268,8 @@ CWD="${NVIM_AGENT_CWD}"
 # Deliberately NOT derived from $CWD: two Neovim instances on the same
 # project each get their own tree, and this var is how the hook finds ours.
 RUNTIME_DIR="${NVIM_AGENT_RUNTIME_DIR}"
+# The workspace's work-history vault (shared by every instance running it).
+HIST_DIR="${NVIM_AGENT_HISTORY_DIR}"
 if [ -z "$ACTIVE_DIR" ]; then
     echo "nvim-agent: NVIM_AGENT_ACTIVE_DIR not set (not running inside nvim-agent?)" >&2
     exit 0
@@ -302,20 +308,17 @@ for f in persistent_dirs.json user_notes.md; do
     fi
 done
 
-# --- 3. Persistent agent state (occasional appends) -------------------------
-# All peer communication for THIS Neovim instance lives in $RUNTIME_DIR
-if [ -n "$RUNTIME_DIR" ] && [ -n "$SESSION_NAME" ]; then
-    PROJ_DIR="$RUNTIME_DIR"
-
-    # Work history is an Obsidian vault; inject this agent's entries for today
-    # (one note each, grows only when it calls log_work) and the topic names.
-    HIST_TODAY="$PROJ_DIR/history/agents/$SESSION_NAME/$(date +%F)"
+# --- 3. Work history (occasional appends) ------------------------------------
+# The workspace's Obsidian vault: inject this agent's entries for today (one
+# note each, grows only when it calls log_work) and the topic names.
+if [ -n "$HIST_DIR" ] && [ -n "$SESSION_NAME" ]; then
+    HIST_TODAY="$HIST_DIR/agents/$SESSION_NAME/$(date +%F)"
     if [ -d "$HIST_TODAY" ] && ls "$HIST_TODAY"/*.md >/dev/null 2>&1; then
         echo "--- work_history (today, last 40 lines) ---"
         cat "$HIST_TODAY"/*.md | tail -40
         echo ""
     fi
-    TOPICS_DIR="$PROJ_DIR/history/topics"
+    TOPICS_DIR="$HIST_DIR/topics"
     if [ -d "$TOPICS_DIR" ]; then
         topics=$(ls "$TOPICS_DIR" 2>/dev/null | sed 's/\.md$//' | tr '\n' ' ')
         if [ -n "$topics" ]; then

@@ -42,6 +42,10 @@ role_file:close()
 -- at load time into local upvalues.
 vim.env.NVIM_AGENT_ACTIVE_DIR = active_dir
 vim.env.NVIM_AGENT_RUNTIME_DIR = runtime_dir
+-- The work-history vault belongs to the WORKSPACE, not the instance.
+local history_dir = cwd .. "/.nvim-agent/workspaces/ephemeral/history"
+vim.env.NVIM_AGENT_HISTORY_DIR = history_dir
+vim.env.NVIM_AGENT_INSTANCE_ID = instance_id
 -- Stale value from previous tests in the same nvim process won't bite us
 -- because we set them explicitly here.
 
@@ -213,7 +217,7 @@ check("log_work succeeds", not lerr and logged:find("Logged '", 1, true) ~= nil,
 run("log_work", { summary = "fixed bar", title = "Bar fix" })
 
 local today = os.date("%Y-%m-%d")
-local vault = runtime_dir .. "/history"
+local vault = history_dir
 check("vault README created", read(vault .. "/README.md") ~= nil)
 local day_dir = vault .. "/agents/Alice/" .. today
 local entries = vim.fn.glob(day_dir .. "/*.md", false, true)
@@ -222,6 +226,8 @@ check("one note per log_work under agents/Alice/<today>/", #entries == 2, vim.in
 local both = (read(entries[1]) or "") .. (read(entries[2]) or "")
 check("entry notes carry the summary and topic links", both:find("implemented foo", 1, true) ~= nil and both:find("[[topics/auth-flow]]", 1, true) ~= nil, both)
 check("second entry used the explicit title in its file name", vim.fn.glob(day_dir .. "/*-bar-fix.md") ~= "")
+check("entries record the writing instance", both:find("instance: " .. instance_id, 1, true) ~= nil)
+check("nothing was written under the instance runtime dir", vim.fn.isdirectory(runtime_dir .. "/history") == 0)
 check("topics normalised to slugs", read(vault .. "/topics/auth-flow.md") ~= nil)
 check("agent index groups today's entries", (read(vault .. "/agents/Alice/index.md") or ""):find("## " .. today, 1, true) ~= nil)
 
@@ -272,6 +278,8 @@ check("last message content intact", stuffed:find("msg #50") ~= nil)
 vim.fn.delete(sandbox, "rf")
 vim.env.NVIM_AGENT_ACTIVE_DIR = nil
 vim.env.NVIM_AGENT_RUNTIME_DIR = nil
+vim.env.NVIM_AGENT_HISTORY_DIR = nil
+vim.env.NVIM_AGENT_INSTANCE_ID = nil
 
 print(string.format("\n%d/%d checks passed", total - fail_count, total))
 if fail_count > 0 then

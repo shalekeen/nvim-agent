@@ -162,6 +162,8 @@ function M:setup_session_mcp(session)
 					-- MCP server and hook never fall back to a shared location.
 					NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
 					NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(session.cwd),
+					-- The workspace's work-history vault (shared across instances).
+					NVIM_AGENT_HISTORY_DIR = require("nvim-agent.workspace").history_dir(session.workspace, session.cwd),
 				},
 			},
 		},

@@ -16,6 +16,10 @@ local history = require("history")
 -- than silently share state with other Neovim instances on the same project.
 local ACTIVE_DIR = os.getenv("NVIM_AGENT_ACTIVE_DIR") or ""
 local RUNTIME_DIR = os.getenv("NVIM_AGENT_RUNTIME_DIR") or ""
+-- The workspace's work-history vault, shared by every instance running the
+-- workspace (unlike RUNTIME_DIR). Required by the history tools; no fallback.
+local HISTORY_DIR = os.getenv("NVIM_AGENT_HISTORY_DIR") or ""
+local INSTANCE_ID = os.getenv("NVIM_AGENT_INSTANCE_ID")
 
 -- Derive this agent's name from the active dir path.
 -- ACTIVE_DIR structure: .../.nvim-agent/sessions/<instance_id>/<name>/active
@@ -1209,16 +1213,16 @@ function M.execute(tool_name, arguments)
 		if not summary or summary == "" then
 			return { { type = "text", text = "Error: 'summary' is required" } }, true
 		end
-		if RUNTIME_DIR == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set — cannot locate history" } }, true
+		if HISTORY_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_HISTORY_DIR not set — cannot locate the work-history vault" } }, true
 		end
 
-		-- The vault is written by several agents at once; serialise on the
-		-- vault dir so two log_work calls cannot interleave within a note.
-		local vault = project_comm_dir("history")
+		-- The vault is written by several agents (and Neovim instances) at
+		-- once; serialise on the vault so two log_work calls cannot interleave.
+		local vault = HISTORY_DIR
 		vim.fn.mkdir(vault, "p")
 		local result, lock_err = with_lock(vault .. "/.write", function()
-			return history.log(vault, AGENT_NAME, summary, { title = arguments.title, topics = arguments.topics })
+			return history.log(vault, AGENT_NAME, summary, { title = arguments.title, topics = arguments.topics, instance = INSTANCE_ID })
 		end)
 		if not result then
 			return { { type = "text", text = "Error: could not write work history: " .. tostring(lock_err) } }, true
@@ -1232,10 +1236,10 @@ function M.execute(tool_name, arguments)
 	-- read_agent_history
 	-- ----------------------------------------------------------------
 	elseif tool_name == "read_agent_history" then
-		if RUNTIME_DIR == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
+		if HISTORY_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_HISTORY_DIR not set" } }, true
 		end
-		local content = history.read_agent(project_comm_dir("history"), AGENT_NAME, tonumber(arguments.days))
+		local content = history.read_agent(HISTORY_DIR, AGENT_NAME, tonumber(arguments.days))
 		if not content then
 			return { { type = "text", text = "No work history recorded yet for '" .. AGENT_NAME .. "' in this instance" } }, false
 		end
@@ -1245,11 +1249,11 @@ function M.execute(tool_name, arguments)
 	-- read_cwd_history  (every agent, recent days)
 	-- ----------------------------------------------------------------
 	elseif tool_name == "read_cwd_history" then
-		if RUNTIME_DIR == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
+		if HISTORY_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_HISTORY_DIR not set" } }, true
 		end
 		local days = tonumber(arguments.days) or 3
-		local content = history.read_all(project_comm_dir("history"), days)
+		local content = history.read_all(HISTORY_DIR, days)
 		if not content then
 			return { { type = "text", text = "No work history recorded yet in this instance" } }, false
 		end
@@ -1259,24 +1263,24 @@ function M.execute(tool_name, arguments)
 	-- list_history_topics / read_history_topic
 	-- ----------------------------------------------------------------
 	elseif tool_name == "list_history_topics" then
-		if RUNTIME_DIR == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
+		if HISTORY_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_HISTORY_DIR not set" } }, true
 		end
-		local topics = history.list_topics(project_comm_dir("history"))
+		local topics = history.list_topics(HISTORY_DIR)
 		if #topics == 0 then
 			return { { type = "text", text = "No topics yet" } }, false
 		end
 		return { { type = "text", text = table.concat(topics, "\n") } }, false
 
 	elseif tool_name == "read_history_topic" then
-		if RUNTIME_DIR == "" then
-			return { { type = "text", text = "Error: NVIM_AGENT_RUNTIME_DIR not set" } }, true
+		if HISTORY_DIR == "" then
+			return { { type = "text", text = "Error: NVIM_AGENT_HISTORY_DIR not set" } }, true
 		end
 		local topic = arguments.topic
 		if type(topic) ~= "string" or topic == "" then
 			return { { type = "text", text = "Error: 'topic' is required" } }, true
 		end
-		local content = history.read_topic(project_comm_dir("history"), topic)
+		local content = history.read_topic(HISTORY_DIR, topic)
 		if not content then
 			return { { type = "text", text = "No topic '" .. topic .. "' in the vault (see list_history_topics)" } }, false
 		end

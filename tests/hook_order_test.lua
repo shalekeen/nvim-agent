@@ -95,10 +95,12 @@ write(cwd .. "/PROJECT.md", "# Project\n")
 write(active_dir .. "/persistent_dirs.json", "[]")
 write(active_dir .. "/user_notes.md", "# Notes\n")
 local today = os.date("%Y-%m-%d")
-vim.fn.mkdir(runtime_dir .. "/history/agents/Alice/" .. today, "p")
-vim.fn.mkdir(runtime_dir .. "/history/topics", "p")
-write(runtime_dir .. "/history/agents/Alice/" .. today .. "/10-00-log-entry.md", "log entry\n")
-write(runtime_dir .. "/history/topics/auth.md", "# auth\n")
+-- The work-history vault belongs to the workspace, not the instance.
+local history_dir = cwd .. "/.nvim-agent/workspaces/ws/history"
+vim.fn.mkdir(history_dir .. "/agents/Alice/" .. today, "p")
+vim.fn.mkdir(history_dir .. "/topics", "p")
+write(history_dir .. "/agents/Alice/" .. today .. "/10-00-log-entry.md", "log entry\n")
+write(history_dir .. "/topics/auth.md", "# auth\n")
 write(process_dir .. "/tmux_captures.json", '[{"pane":"main"}]')
 write(runtime_dir .. "/status/Bob.json", '{"agent":"Bob","role":"reviewer","current_task":"reading","updated_at":"2026-01-01T00:00:00Z"}')
 write(runtime_dir .. "/messages/Alice.md", "ping")
@@ -108,8 +110,9 @@ write(process_dir .. "/ephemeral.json", '{"buffers":[]}')
 -- would be easy to spot if it leaked.
 write(other_runtime_dir .. "/status/Mallory.json", '{"agent":"Mallory","role":"intruder","current_task":"LEAK_STATUS","updated_at":"2026-01-01T00:00:00Z"}')
 write(other_runtime_dir .. "/messages/Alice.md", "LEAK_MESSAGE")
-vim.fn.mkdir(other_runtime_dir .. "/history/agents/Alice/" .. today, "p")
-write(other_runtime_dir .. "/history/agents/Alice/" .. today .. "/10-00-leak.md", "LEAK_HISTORY\n")
+-- A stray per-instance history dir (pre-workspace-vault layout) must be ignored.
+vim.fn.mkdir(runtime_dir .. "/history/agents/Alice/" .. today, "p")
+write(runtime_dir .. "/history/agents/Alice/" .. today .. "/10-00-leak.md", "LEAK_HISTORY\n")
 write(cwd .. "/.nvim-agent/status/Legacy.json", '{"agent":"Legacy","role":"ghost","current_task":"LEAK_LEGACY","updated_at":"2026-01-01T00:00:00Z"}')
 write(cwd .. "/.nvim-agent/messages/Alice.md", "LEAK_LEGACY_MESSAGE")
 
@@ -124,11 +127,12 @@ vim.fn.system("chmod +x " .. vim.fn.shellescape(hook_path))
 -- ---------------------------------------------------------------------------
 
 local cmd = string.format(
-	"NVIM_AGENT_ACTIVE_DIR=%s NVIM_AGENT_PROCESS_DIR=%s NVIM_AGENT_CWD=%s NVIM_AGENT_RUNTIME_DIR=%s bash %s 2>&1",
+	"NVIM_AGENT_ACTIVE_DIR=%s NVIM_AGENT_PROCESS_DIR=%s NVIM_AGENT_CWD=%s NVIM_AGENT_RUNTIME_DIR=%s NVIM_AGENT_HISTORY_DIR=%s bash %s 2>&1",
 	vim.fn.shellescape(active_dir),
 	vim.fn.shellescape(process_dir),
 	vim.fn.shellescape(cwd),
 	vim.fn.shellescape(runtime_dir),
+	vim.fn.shellescape(history_dir),
 	vim.fn.shellescape(hook_path)
 )
 local output = vim.fn.system(cmd)
@@ -145,7 +149,7 @@ check("own-instance mailbox IS injected", output:find("ping") ~= nil)
 check("own-instance history IS injected", output:find("log entry") ~= nil)
 check("other-instance peer is NOT visible", output:find("Mallory") == nil)
 check("other-instance mailbox is NOT injected", output:find("LEAK_MESSAGE") == nil)
-check("other-instance history is NOT injected", output:find("LEAK_HISTORY") == nil)
+check("per-instance history dir is NOT read (vault is workspace-level)", output:find("LEAK_HISTORY") == nil)
 check("legacy project-level status is NOT read", output:find("Legacy") == nil)
 check("legacy project-level mailbox is NOT read", output:find("LEAK_LEGACY") == nil)
 

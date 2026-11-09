@@ -423,16 +423,24 @@ local function open_history_scratch(title, files)
 	vim.api.nvim_win_set_buf(0, buf)
 end
 
---- Work-history vault for the live instance in `cwd`.
+--- Work-history vault of the live workspace, or nil when none is live.
 local function vault_for(cwd)
-	local H = require("nvim-agent.mcp.history")
-	return H.vault_dir(require("nvim-agent.workspace").instance_runtime_dir(cwd))
+	local ws = require("nvim-agent.workspace")
+	local m = ws.get_current()
+	if not m then
+		vim.notify("nvim-agent: no live workspace", vim.log.levels.WARN)
+		return nil
+	end
+	return ws.history_dir(m.name, cwd)
 end
 
 --- History for one agent in this instance (picker when name is nil).
 function M.history_view_agent(name)
 	local H = require("nvim-agent.mcp.history")
 	local vault = vault_for(vim.fn.getcwd())
+	if not vault then
+		return
+	end
 
 	if name then
 		local content = H.read_agent(vault, name)
@@ -477,6 +485,9 @@ function M.history_view_workspace()
 		return vim.notify("nvim-agent: no live workspace", vim.log.levels.WARN)
 	end
 	local vault = vault_for(vim.fn.getcwd())
+	if not vault then
+		return
+	end
 	local files = {}
 	for _, e in ipairs(m.agents or {}) do
 		table.insert(files, { name = e.name, content = H.read_agent(vault, e.name) })
@@ -484,17 +495,17 @@ function M.history_view_workspace()
 	open_history_scratch("Workspace History: " .. m.name, files)
 end
 
---- History across every Neovim instance that has ever run in this project.
---- Agents only ever see their own instance; this view stitches them together.
+--- History across every workspace in this project (each workspace has its
+--- own vault).
 function M.history_view_project()
 	local H = require("nvim-agent.mcp.history")
+	local ws = require("nvim-agent.workspace")
 	local cwd = vim.fn.getcwd()
-	local instances_dir = require("nvim-agent.workspace").runtime_dir(cwd) .. "/instances"
 	local files = {}
-	for _, inst in ipairs(vim.fn.glob(instances_dir .. "/*", false, true)) do
-		local content = H.read_all(H.vault_dir(inst), nil)
+	for _, m in ipairs(ws.list(cwd)) do
+		local content = H.read_all(ws.history_dir(m.name, cwd), nil)
 		if content then
-			table.insert(files, { name = "instance " .. vim.fn.fnamemodify(inst, ":t"):sub(1, 8), content = content })
+			table.insert(files, { name = "workspace " .. m.name, content = content })
 		end
 	end
 	if #files == 0 then
@@ -508,6 +519,9 @@ end
 function M.history_open()
 	local H = require("nvim-agent.mcp.history")
 	local vault = vault_for(vim.fn.getcwd())
+	if not vault then
+		return
+	end
 	vim.fn.mkdir(vault, "p")
 	H.ensure_vault(vault)
 	vim.cmd("edit " .. vim.fn.fnameescape(vault .. "/README.md"))

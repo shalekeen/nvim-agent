@@ -118,7 +118,7 @@ vim.opt.statusline = "%f %m%r  %{%v:lua.require('nvim-agent').statusline()%}%=%y
 
 - `inbox_wakeups` (default `true`): nvim-agent periodically nudges an idle agent whose mailbox or trigger file has new content so it resumes work. Set `false` for an agent that should act only when addressed directly; `trigger_agent` wakes still reach it, and messages still arrive in its context on its next prompt.
 - `inbox_wakeup_interval` (default `30`): seconds between those checks for this agent, minimum 5. An agent is nudged only if it produced no terminal output for a whole interval and has something pending, so `300` means at most one nudge every five minutes.
-- `history` (default `"persistent"`): `"fresh"` removes the agent's notes, index and topic links from the vault every time its CLI launches, restarts included, so each start has a clean log. Use it for agents whose past work should never colour a new session.
+- `history` (default `"persistent"`): `"fresh"` removes the entries this Neovim instance wrote for the agent, with their index and topic links, every time its CLI launches, restarts included, so each start has a clean log. Entries written by another instance running the same workspace are left alone. Use it for agents whose past work should never colour a new session.
 - `periodic` (default `[]`): prompts typed into the agent's terminal on a schedule. Each entry needs a `prompt` and an `interval` in seconds (minimum 5), and may set `when` to `"idle"` (the default: send only if the agent produced no terminal output for a whole interval, so a prompt never interrupts work in progress) or `"always"`. Each entry keeps its own clock. Invalid entries are dropped.
 
 Unknown keys are ignored and invalid values fall back to the defaults. Edits to the live copy take effect without a relaunch for `inbox_wakeups`, `inbox_wakeup_interval` and `periodic`; `history` is applied at the next launch.
@@ -240,7 +240,8 @@ When the plugin spawns either the agent CLI (e.g. `claude`) or its MCP server, i
 | `NVIM_AGENT_CWD` | ✓ | ✓ | `vim.fn.getcwd()` at session start |
 | `NVIM_AGENT_BASE_DIR` | ✓ | ✓ | The configured `base_dir` (defaults to `~/.nvim-agent`) |
 | `NVIM_AGENT_INSTANCE_ID` | ✓ | ✓ | UUID minted once per Neovim process when nvim-agent loads |
-| `NVIM_AGENT_RUNTIME_DIR` | ✓ | ✓ | `<cwd>/.nvim-agent/instances/<instance-id>/` — this Neovim instance's peer state (status, messages, history, triggers) |
+| `NVIM_AGENT_RUNTIME_DIR` | ✓ | ✓ | `<cwd>/.nvim-agent/instances/<instance-id>/` — this Neovim instance's peer state (status, messages, triggers) |
+| `NVIM_AGENT_HISTORY_DIR` | ✓ | ✓ | `<cwd>/.nvim-agent/workspaces/<workspace>/history/` — the workspace's work-history vault, shared across instances |
 | `NVIM_AGENT_NVIM_ADDR` | – | ✓ | `vim.v.servername` — used by the MCP server to RPC into the parent Neovim |
 
 Custom adapters can read these to find the right files (see `lua/nvim-agent/adapter/README.md`).
@@ -264,7 +265,8 @@ Claude Code runs the hook before every prompt and prepends the hook's stdout to 
 - **Instance-local** (from `$NVIM_AGENT_RUNTIME_DIR`):
   - Pending messages addressed to this session
   - Status + role summary of all peer agents hosted by the same Neovim
-  - Today's note from this agent's work-history vault, and the vault's topic names
+- **Workspace-wide** (from `$NVIM_AGENT_HISTORY_DIR`):
+  - Today's entries for this agent from the workspace's work-history vault, and the vault's topic names
 
 Peer state is deliberately keyed by Neovim instance, not by project directory. Two Neovim windows open on the same repo each mint their own instance id at startup and get their own `instances/<instance-id>/` subtree, so their agents never see each other's statuses, mailboxes, history, or wakeup triggers. If `$NVIM_AGENT_RUNTIME_DIR` is missing the hook and MCP tools fail closed rather than falling back to a shared location.
 
@@ -276,7 +278,7 @@ Every running agent advertises a status file containing its current task and its
 
 ### Work history
 
-Each instance keeps its agents' work history as an **Obsidian vault** at `<cwd>/.nvim-agent/instances/<instance-id>/history/`. `:NvimAgent history open` (`<leader>aho`) opens its README and prints the folder path to open in Obsidian. Agents write to it only through `log_work(summary, title?, topics?)`: every call creates one note, `agents/<agent>/YYYY-MM-DD/HH-MM-<title>.md`, adds it to that agent's `index.md` under the day's heading, and links it from each `topics/<topic>.md`, so a topic note is a cross-agent, cross-day thread of everything tagged with it. The vault is shared by every agent in the instance. Agents read it back with `read_agent_history`, `read_cwd_history`, `list_history_topics`, and `read_history_topic`. The rules for what to log and how to tag it live in the core preamble, which agents cannot edit; the hook injects today's note and the topic list before every prompt. The `history` key in an agent's `config.json` controls whether its notes persist across launches.
+Each workspace keeps its agents' work history as an **Obsidian vault** at `<cwd>/.nvim-agent/workspaces/<workspace>/history/`. It persists across Neovim restarts, so days accumulate and topics link work across them, and it is shared by every Neovim instance running that workspace; each entry records which instance wrote it, and `history: "fresh"` only removes the launching instance's own entries. `:NvimAgent history open` (`<leader>aho`) opens its README and prints the folder path to open in Obsidian. Agents write to it only through `log_work(summary, title?, topics?)`: every call creates one note, `agents/<agent>/YYYY-MM-DD/HH-MM-<title>.md`, adds it to that agent's `index.md` under the day's heading, and links it from each `topics/<topic>.md`, so a topic note is a cross-agent, cross-day thread of everything tagged with it. Agents read it back with `read_agent_history`, `read_cwd_history`, `list_history_topics`, and `read_history_topic`. The rules for what to log and how to tag it live in the core preamble, which agents cannot edit; the hook injects today's note and the topic list before every prompt. The `history` key in an agent's `config.json` controls whether its notes persist across launches.
 
 `spawn_agent(name, system_prompt?, role?, user_notes?)` has three behaviours: if `name` is an exited peer it is relaunched; if it is an agent in the library it is added to the workspace and launched; otherwise `system_prompt` and `role` are required and a new agent is saved to the library's spawned section, added, and launched.
 
@@ -314,15 +316,15 @@ Each instance keeps its agents' work history as an **Obsidian vault** at `<cwd>/
 ├── workspaces/<name>/<session>/       # that member's override files for this workspace only
 │   ├── user_notes.md                  #   any of the agent's files may appear here;
 │   └── persistent_dirs.json           #   present = used instead of the global one
+├── workspaces/<name>/history/         # the workspace's work-history vault (open in Obsidian)
+│   ├── agents/<agent>/index.md        #   that agent's entries grouped by day
+│   ├── agents/<agent>/YYYY-MM-DD/     #   subdir per day …
+│   │   └── HH-MM-<title>.md           #   … one note per log_work call
+│   └── topics/<topic>.md              #   per-topic links across agents and days
 ├── workspaces/ephemeral/workspace.json
 └── instances/<instance-id>/           # one subtree per running Neovim (UUID minted at setup)
     ├── status/<agent>.json            # peer discovery: each running agent advertises here
     ├── messages/<agent>.md            # mailboxes for inter-agent send_message()
-    ├── history/                       # work-history vault (open in Obsidian)
-    │   ├── agents/<agent>/index.md      #   that agent's entries grouped by day
-    │   ├── agents/<agent>/YYYY-MM-DD/   #   subdir per day …
-    │   │   └── HH-MM-<title>.md         #   … one note per log_work call
-    │   └── topics/<topic>.md            #   per-topic links across agents and days
     └── triggers/<agent>.md            # wakeup signals
 ```
 

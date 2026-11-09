@@ -181,9 +181,13 @@ local function launch_session_in_window(sess, win, adapter)
 
 	-- config.json: history = "fresh" → start an empty work log on every
 	-- launch of this agent's CLI (initial launch and relaunch alike).
+	local ws = require("nvim-agent.workspace")
+	local ws_name = sess.workspace or (ws.get_current() and ws.get_current().name) or ws.EPHEMERAL
+	local history_dir = ws.history_dir(ws_name, cwd)
 	if require("nvim-agent.session").config(sess).history == "fresh" then
-		local H = require("nvim-agent.mcp.history")
-		H.forget_agent(H.vault_dir(require("nvim-agent.workspace").instance_runtime_dir(cwd)), sess.name)
+		-- Scoped to THIS instance's entries: the vault is shared with any other
+		-- Neovim running the workspace, whose log must survive our fresh start.
+		require("nvim-agent.mcp.history").forget_agent(history_dir, sess.name, require("nvim-agent.session").instance_id)
 	end
 
 	-- Identity of THIS launch's job; see the on_exit guard below.
@@ -198,7 +202,9 @@ local function launch_session_in_window(sess, win, adapter)
 			-- NVIM_AGENT_RUNTIME_DIR so each Neovim instance's agents only
 			-- ever see their own siblings.
 			NVIM_AGENT_INSTANCE_ID = require("nvim-agent.session").instance_id,
-			NVIM_AGENT_RUNTIME_DIR = require("nvim-agent.workspace").instance_runtime_dir(cwd),
+			NVIM_AGENT_RUNTIME_DIR = ws.instance_runtime_dir(cwd),
+			-- The workspace's work-history vault: shared across instances.
+			NVIM_AGENT_HISTORY_DIR = history_dir,
 		},
 		on_exit = function(_, code, _)
 			vim.schedule(function()

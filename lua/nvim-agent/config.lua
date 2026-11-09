@@ -49,6 +49,9 @@ Context is split across three directories:
 - Process dir  ($NVIM_AGENT_PROCESS_DIR): ~/.nvim-agent/sessions/<instance-id>/
 - Runtime dir  ($NVIM_AGENT_RUNTIME_DIR): $NVIM_AGENT_CWD/.nvim-agent/instances/<instance-id>/
                                           peer state for THIS Neovim instance only
+- History dir  ($NVIM_AGENT_HISTORY_DIR): $NVIM_AGENT_CWD/.nvim-agent/workspaces/<workspace>/history/
+                                          the workspace's work-history vault, shared by every
+                                          agent and every Neovim instance running the workspace
 
 nvim-agent maintains these context files for you. How they reach you depends on the
 CLI you are running in and is described in the "How context reaches you" section below:
@@ -60,8 +63,8 @@ CLI you are running in and is described in the "How context reaches you" section
 - tmux_captures.json          -- (process dir) Captured tmux pane content, SHARED by all agents
 - messages_for_you.md         -- (runtime dir) Pending messages from peer agents (if any)
 - peer_agents                 -- (runtime dir) Role + status of each other active agent (if any)
-- work_history                -- (runtime dir) today's entries from your work-history vault (if any)
-- work_history_topics         -- (runtime dir) topic names in the vault (if any)
+- work_history                -- (history dir) today's entries from the work-history vault (if any)
+- work_history_topics         -- (history dir) topic names in the vault (if any)
 
 ephemeral.json is refreshed every time the user switches to any agent terminal buffer.
 Runtime-dir files are scoped to this Neovim instance: your peers are exactly the other
@@ -182,8 +185,11 @@ whether a task should be delegated to a more appropriate peer.
 
 ## Work History (Obsidian vault)
 
-Every agent's work log lives in one structured vault at $NVIM_AGENT_RUNTIME_DIR/history/
-(the user opens that folder in Obsidian). Never write to it by hand; use the tools.
+Every agent's work log lives in one structured vault at $NVIM_AGENT_HISTORY_DIR (the user
+opens that folder in Obsidian). It belongs to the WORKSPACE: every agent in it and every
+Neovim instance running it share the same vault, and it persists across restarts, so
+today's entries connect to earlier days' through topics. Entries record which instance
+wrote them. Never write to the vault by hand; use the tools.
 Layout:
 - agents/<agent>/YYYY-MM-DD/HH-MM-<title>.md   one note per unit of work, filed under the
                                                  agent and the day it was logged

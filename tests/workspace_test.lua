@@ -83,6 +83,7 @@ check(
 local inst_dir = workspace.instance_runtime_dir(cwd)
 assert_eq("instance_runtime_dir = <cwd>/.nvim-agent/instances/<id>", inst_dir, cwd .. "/.nvim-agent/instances/" .. session.instance_id)
 assert_eq("init_runtime returns the instance dir", workspace.init_runtime(cwd), inst_dir)
+assert_eq("history_dir lives under the workspace dir", workspace.history_dir("team", cwd), cwd .. "/.nvim-agent/workspaces/team/history")
 for _, sub in ipairs({ "messages", "status", "history", "triggers" }) do
 	check("instance " .. sub .. "/ exists", vim.fn.isdirectory(inst_dir .. "/" .. sub) == 1)
 end

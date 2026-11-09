@@ -2,9 +2,13 @@
 --
 -- Shared between the MCP server (flat require("history") under `nvim -l`)
 -- and the parent Neovim (require("nvim-agent.mcp.history")). Pure file I/O.
--- One vault per Neovim instance, shared by every agent in it.
+-- One vault per WORKSPACE (<cwd>/.nvim-agent/workspaces/<ws>/history/),
+-- shared by every agent in it and by every Neovim instance running it,
+-- persistent across restarts. Entries record the writing instance so two
+-- instances' logs stay attributable, and history="fresh" only removes the
+-- launching instance's own entries.
 --
---   <runtime_dir>/history/                      ← open this folder in Obsidian
+--   <workspace dir>/history/                    ← open this folder in Obsidian
 --     README.md                                 what the vault is, how it is laid out
 --     agents/<agent>/index.md                   that agent's entries, grouped by day
 --     agents/<agent>/YYYY-MM-DD/                subdir per day
@@ -96,10 +100,6 @@ local function trim(s)
 	return (s:gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
-local function escape_pattern(s)
-	return (s:gsub("%p", "%%%0"))
-end
-
 ------------------------------------------------------------------------
 -- Naming
 ------------------------------------------------------------------------
@@ -118,8 +118,9 @@ function M.slug(text)
 	return s
 end
 
-function M.vault_dir(runtime_dir)
-	return runtime_dir .. "/history"
+--- @param base string  the workspace directory (or any parent of the vault)
+function M.vault_dir(base)
+	return base .. "/history"
 end
 
 function M.agent_dir(vault, agent)
@@ -200,7 +201,8 @@ end
 --- @param vault string
 --- @param agent string
 --- @param summary string
---- @param opts table|nil  { title = string, topics = string[], now = number }
+--- @param opts table|nil  { title = string, topics = string[], now = number,
+---                           instance = string  (writing Neovim's instance id) }
 --- @return table  { path, link, date, time, title, topics }
 function M.log(vault, agent, summary, opts)
 	opts = opts or {}
@@ -229,19 +231,23 @@ function M.log(vault, agent, summary, opts)
 		table.insert(topic_links, "[[topics/" .. t .. "]]")
 	end
 	local fm_topics = #topics > 0 and ("[" .. table.concat(topics, ", ") .. "]") or "[]"
+	local instance = type(opts.instance) == "string" and opts.instance ~= "" and opts.instance or nil
+	local short = instance and (" · " .. instance:sub(1, 8)) or ""
 	write(
 		path,
 		string.format(
-			"---\nagent: %s\ndate: %s\ntime: \"%s\"\ntopics: %s\n---\n# %s\n**Agent:** [[agents/%s/index|%s]] · **Day:** %s%s\n\n%s\n",
+			"---\nagent: %s\ndate: %s\ntime: \"%s\"\ntopics: %s\n%s---\n# %s\n**Agent:** [[agents/%s/index|%s]] · **Day:** %s%s%s\n\n%s\n",
 			agent,
 			date,
 			time,
 			fm_topics,
+			instance and ("instance: " .. instance .. "\n") or "",
 			title,
 			agent,
 			agent,
 			date,
 			#topic_links > 0 and (" · **Topics:** " .. table.concat(topic_links, " ")) or "",
+			instance and (" · **Instance:** " .. instance:sub(1, 8)) or "",
 			trim(summary)
 		)
 	)
@@ -255,7 +261,7 @@ function M.log(vault, agent, summary, opts)
 	if not idx:find("\n## " .. date .. "\n", 1, true) then
 		append(index, "\n## " .. date .. "\n")
 	end
-	append(index, string.format("- [[%s|%s %s]]\n", link, time, title))
+	append(index, string.format("- [[%s|%s %s]]%s\n", link, time, title, short))
 
 	-- Topic notes: one bullet per entry.
 	for _, t in ipairs(topics) do
@@ -263,10 +269,10 @@ function M.log(vault, agent, summary, opts)
 		if not exists(tnote) then
 			write(tnote, string.format("# %s\n\nEntries, oldest first.\n\n", t))
 		end
-		append(tnote, string.format("- [[%s|%s %s %s: %s]]\n", link, date, time, agent, title))
+		append(tnote, string.format("- [[%s|%s %s %s: %s]]%s\n", link, date, time, agent, title, short))
 	end
 
-	return { path = path, link = link, date = date, time = time, title = title, topics = topics }
+	return { path = path, link = link, date = date, time = time, title = title, topics = topics, instance = instance }
 end
 
 ------------------------------------------------------------------------
@@ -405,38 +411,103 @@ end
 -- Forgetting (config.json: history = "fresh")
 ------------------------------------------------------------------------
 
---- Remove every trace of `agent` from the vault: its directory (all days,
---- all entries, its index) and its lines in topic notes. Topic notes left
---- with no entries are removed too.
-function M.forget_agent(vault, agent)
-	local dir = M.agent_dir(vault, agent)
-	if vim.fn.isdirectory(dir) == 1 then
-		vim.fn.delete(dir, "rf")
+--- Drop lines from a note that link to any of `links` (a set keyed by the
+--- vault-relative link). Deletes the note when no entry links remain and
+--- `delete_when_empty` is set. Returns true if anything changed.
+local function strip_links(path, links, delete_when_empty)
+	local c = read(path)
+	if not c then
+		return false
 	end
-	local marker = "%[%[agents/" .. escape_pattern(agent) .. "/"
-	for _, t in ipairs(M.list_topics(vault)) do
-		local tnote = M.topic_note(vault, t)
-		local c = read(tnote)
-		if c then
-			local kept, removed, entries = {}, false, 0
-			for line in (c .. "\n"):gmatch("([^\n]*)\n") do
-				if line:match("^%- " .. marker) then
-					removed = true
-				else
-					table.insert(kept, line)
-					if line:match("^%- %[%[agents/") then
-						entries = entries + 1
+	local kept, removed, entries = {}, false, 0
+	for line in (c .. "\n"):gmatch("([^\n]*)\n") do
+		local link = line:match("^%- %[%[(agents/[^|%]]+)")
+		if link and links[link] then
+			removed = true
+		else
+			table.insert(kept, line)
+			if link then
+				entries = entries + 1
+			end
+		end
+	end
+	if removed then
+		if entries == 0 and delete_when_empty then
+			vim.fn.delete(path)
+		else
+			write(path, table.concat(kept, "\n"))
+		end
+	end
+	return removed
+end
+
+--- Remove `agent`'s history from the vault.
+---
+--- With `instance` nil: everything — the agent's directory (all days, all
+--- entries, its index) and its lines in every topic note.
+---
+--- With `instance` set: only entries whose frontmatter records that
+--- instance id. The vault is shared by every Neovim running the workspace,
+--- so a "fresh" start in one window must not erase another window's log.
+--- Index and topic lines for the removed entries are dropped; emptied day
+--- dirs, index and topic notes are deleted.
+--- @param vault string
+--- @param agent string
+--- @param instance string|nil
+function M.forget_agent(vault, agent, instance)
+	local dir = M.agent_dir(vault, agent)
+	if vim.fn.isdirectory(dir) ~= 1 then
+		return
+	end
+
+	if not instance then
+		vim.fn.delete(dir, "rf")
+		local marker = "agents/" .. agent .. "/"
+		for _, t in ipairs(M.list_topics(vault)) do
+			local tnote = M.topic_note(vault, t)
+			local c = read(tnote)
+			if c then
+				local links = {}
+				for link in c:gmatch("%[%[(agents/[^|%]]+)") do
+					if link:sub(1, #marker) == marker then
+						links[link] = true
 					end
 				end
-			end
-			if removed then
-				if entries == 0 then
-					vim.fn.delete(tnote)
-				else
-					write(tnote, table.concat(kept, "\n"))
+				if next(links) then
+					strip_links(tnote, links, true)
 				end
 			end
 		end
+		return
+	end
+
+	-- Scoped: collect this instance's entries first.
+	local links = {}
+	for _, date in ipairs(list_dirs(dir)) do
+		local day = M.day_dir(vault, agent, date)
+		for _, name in ipairs(list_md(day)) do
+			local c = read(day .. "/" .. name .. ".md") or ""
+			local fm = c:match("^%-%-%-\n(.-)\n%-%-%-\n") or ""
+			-- Pad with newlines so the key matches wherever it sits in the block.
+			if ("\n" .. fm .. "\n"):find("\ninstance: " .. instance .. "\n", 1, true) then
+				links["agents/" .. agent .. "/" .. date .. "/" .. name] = true
+				vim.fn.delete(day .. "/" .. name .. ".md")
+			end
+		end
+		if vim.fn.isdirectory(day) == 1 and #vim.fn.readdir(day) == 0 then
+			vim.fn.delete(day, "d")
+		end
+	end
+	if not next(links) then
+		return
+	end
+	strip_links(M.agent_index(vault, agent), links, true)
+	for _, t in ipairs(M.list_topics(vault)) do
+		strip_links(M.topic_note(vault, t), links, true)
+	end
+	local rest = vim.fn.isdirectory(dir) == 1 and vim.fn.readdir(dir) or {}
+	if #rest == 0 then
+		vim.fn.delete(dir, "d")
 	end
 end
 
