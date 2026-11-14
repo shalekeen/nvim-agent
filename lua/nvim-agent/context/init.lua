@@ -37,8 +37,17 @@ function M.write_all(active_dir, process_dir)
 	local cfg = config.get()
 
 	local eph_target = process_dir or active_dir
+	local eph_path = eph_target .. "/" .. cfg.context_files.ephemeral
 	local eph = ephemeral.gather()
-	write_file(eph_target .. "/" .. cfg.context_files.ephemeral, vim.json.encode(eph))
+	write_file(eph_path, vim.json.encode(eph))
+	-- Git state is probed in the background; rewrite the snapshot when it
+	-- lands so the next prompt sees fresh branch/status without this call
+	-- ever having blocked on a shell command.
+	ephemeral.refresh_git(eph.cwd, function(changed)
+		if changed then
+			write_file(eph_path, vim.json.encode(ephemeral.gather()))
+		end
+	end)
 
 	local fallbacks = {
 		{ cfg.context_files.persistent_dirs, "[]" },

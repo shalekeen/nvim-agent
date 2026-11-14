@@ -1,12 +1,14 @@
 local M = {}
 
-local function safe_system(cmd)
-    local ok, result = pcall(vim.fn.system, cmd)
-    if ok and vim.v.shell_error == 0 then
-        return vim.trim(result)
-    end
-    return nil
-end
+-- Git state is gathered ASYNCHRONOUSLY and cached. gather() is called on
+-- every BufEnter of an agent terminal (and at launch); shelling out to git
+-- there used to block Neovim for the duration of three `git` invocations,
+-- which on a large or recently-touched repository (index refresh) can be
+-- seconds — felt as a hang when switching between agent windows. Now the
+-- snapshot uses the last known git state, and a background refresh rewrites
+-- the context file when it lands.
+M.GIT_TTL_MS = 2000
+M._git = { info = nil, at = 0, inflight = false, cwd = nil }
 
 local function get_open_buffers()
     local bufs = {}
@@ -40,24 +42,75 @@ local function get_cursor_context()
     }
 end
 
-local function get_git_info()
-    local branch = safe_system("git rev-parse --abbrev-ref HEAD 2>/dev/null")
-    if not branch then
+-- One shell invocation; sections separated by NUL. An empty first section
+-- means "not a git repository".
+local GIT_PROBE = "git rev-parse --abbrev-ref HEAD 2>/dev/null; printf '\\0'; git status --porcelain 2>/dev/null; printf '\\0'; git log --oneline -5 2>/dev/null"
+
+local function parse_git_probe(out)
+    local parts = vim.split(out or "", "\0", { plain = true })
+    local branch = vim.trim(parts[1] or "")
+    if branch == "" then
         return nil
     end
-    local status = safe_system("git status --porcelain 2>/dev/null")
-    local log_raw = safe_system("git log --oneline -5 2>/dev/null")
     local commits = {}
-    if log_raw then
-        for line in log_raw:gmatch("[^\n]+") do
-            table.insert(commits, line)
-        end
+    for line in (parts[3] or ""):gmatch("[^\n]+") do
+        table.insert(commits, line)
     end
     return {
         branch = branch,
-        status = status or "",
+        status = vim.trim(parts[2] or ""),
         recent_commits = commits,
     }
+end
+
+--- Refresh the cached git state in the background. `on_done(changed)` runs
+--- on the main loop when the probe finishes (changed = the cache was
+--- updated). A refresh is skipped while one is in flight or the cache is
+--- younger than GIT_TTL_MS for the same cwd.
+--- @param cwd string
+--- @param on_done fun(changed: boolean)|nil
+function M.refresh_git(cwd, on_done)
+    local g = M._git
+    local now = (vim.uv or vim.loop).now()
+    if g.inflight or (g.cwd == cwd and now - g.at < M.GIT_TTL_MS) then
+        if on_done then
+            on_done(false)
+        end
+        return
+    end
+    if not vim.system then
+        -- Neovim < 0.10: no async process API; leave git out rather than block.
+        if on_done then
+            on_done(false)
+        end
+        return
+    end
+    g.inflight = true
+    local ok = pcall(vim.system, { "sh", "-c", GIT_PROBE }, { cwd = cwd, text = true, timeout = 10000 }, function(res)
+        vim.schedule(function()
+            g.inflight = false
+            g.at = (vim.uv or vim.loop).now()
+            g.cwd = cwd
+            g.info = res.code == 0 and parse_git_probe(res.stdout) or nil
+            if on_done then
+                on_done(true)
+            end
+        end)
+    end)
+    if not ok then
+        g.inflight = false
+        if on_done then
+            on_done(false)
+        end
+    end
+end
+
+local function get_git_info(cwd)
+    local g = M._git
+    if g.cwd == cwd then
+        return g.info
+    end
+    return nil
 end
 
 local function get_recent_diagnostics()
@@ -105,13 +158,16 @@ local function get_quickfix_entries()
     return entries
 end
 
+--- Snapshot of editor state. Never blocks: git comes from the cache (nil
+--- until the first background probe lands); call refresh_git() to update it.
 function M.gather()
+    local cwd = vim.fn.getcwd()
     return {
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        cwd = vim.fn.getcwd(),
+        cwd = cwd,
         open_buffers = get_open_buffers(),
         cursor = get_cursor_context(),
-        git = get_git_info(),
+        git = get_git_info(cwd),
         recent_diagnostics = get_recent_diagnostics(),
         quickfix = get_quickfix_entries(),
     }

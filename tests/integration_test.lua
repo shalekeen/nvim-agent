@@ -149,6 +149,37 @@ check("base contract carries no Claude Code vocabulary", not base_contract:find(
 local base_perms = base:get_agent_permissions({ active_dir = tmp_active })
 check("base permissions grant nothing", type(base_perms) == "table" and #base_perms.allow == 0 and #base_perms.deny == 0)
 
+-- Ephemeral context never blocks on git: the snapshot carries the cached
+-- state (nil before the first probe) and a background refresh fills it in.
+do
+	local eph = require("nvim-agent.context.ephemeral")
+	local orig_cwd = vim.fn.getcwd()
+	local repo = sandbox .. "/repo"
+	vim.fn.mkdir(repo, "p")
+	vim.fn.system({ "git", "-C", repo, "init", "-q" })
+	vim.fn.system({ "git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first" })
+	vim.cmd("cd " .. vim.fn.fnameescape(repo))
+	local uv = vim.uv or vim.loop
+	local t0 = uv.hrtime()
+	local snap = eph.gather()
+	local gather_ms = (uv.hrtime() - t0) / 1e6
+	check("gather() does not block on git (no cached state yet → git=nil)", snap.git == nil and gather_ms < 200, string.format("git=%s %.1fms", vim.inspect(snap.git), gather_ms))
+	local landed = nil
+	eph.refresh_git(repo, function(changed) landed = changed end)
+	vim.wait(5000, function() return landed ~= nil end, 20)
+	check("background git probe lands and updates the cache", landed == true and eph._git.info ~= nil and eph._git.info.branch ~= "" and #eph._git.info.recent_commits == 1, vim.inspect(eph._git.info))
+	check("gather() now carries the cached git state", eph.gather().git ~= nil and eph.gather().git.recent_commits[1]:find("first", 1, true) ~= nil)
+	local again = nil
+	eph.refresh_git(repo, function(changed) again = changed end)
+	check("a refresh inside the TTL is skipped without blocking", again == false)
+	eph._git.at = 0
+	local other = nil
+	eph.refresh_git(sandbox, function(changed) other = changed end)
+	vim.wait(5000, function() return other ~= nil end, 20)
+	check("probe outside a repository caches nil and gather() reports no git", other == true and eph._git.info == nil and eph.gather().git == nil)
+	vim.cmd("cd " .. vim.fn.fnameescape(orig_cwd))
+end
+
 -- The bundled Claude Code adapter: hook contract, profiles from the session mirror.
 local cc = require("nvim-agent.adapter.claude_code")
 check("claude_code contract names the UserPromptSubmit hook", cc:get_context_contract():find("UserPromptSubmit") ~= nil)
