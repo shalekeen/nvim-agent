@@ -110,6 +110,7 @@ M.DEFAULT_CONFIG = {
 	inbox_wakeups = true,
 	inbox_wakeup_interval = 30,
 	history = "persistent",
+	conversation = "resume",
 	periodic = {},
 }
 
@@ -137,6 +138,9 @@ function M.read_config(dir)
 	end
 	if data.history == "fresh" or data.history == "persistent" then
 		out.history = data.history
+	end
+	if data.conversation == "fresh" or data.conversation == "resume" then
+		out.conversation = data.conversation
 	end
 	if type(data.periodic) == "table" then
 		out.periodic = {}

@@ -30,7 +30,7 @@ local SUBCOMMANDS = {
 
 local OPEN_SUBS = { "all" }
 local WORKSPACE_SUBS = { "new", "load", "list", "remove", "rename", "save-as" }
-local AGENT_SUBS = { "add", "remove", "stop", "restart", "define", "copy", "edit", "delete", "list", "push", "overrides", "reset" }
+local AGENT_SUBS = { "add", "remove", "stop", "restart", "fresh", "define", "copy", "edit", "delete", "list", "push", "overrides", "reset" }
 local SESSION_SUBS = { "list", "switch" }
 local EDIT_SUBS = { "prompt", "notes", "dirs", "role", "config" }
 local VIEW_SUBS = { "prompt", "notes", "dirs", "role", "config" }
@@ -124,7 +124,7 @@ local function complete(_, cmd_line, _)
 		elseif sub == "agent" then
 			if action == "add" or action == "copy" or action == "edit" or action == "delete" then
 				return prefix_filter(library_agent_names(), cur)
-			elseif action == "remove" or action == "restart" or action == "stop" or action == "push" or action == "reset" then
+			elseif action == "remove" or action == "restart" or action == "stop" or action == "fresh" or action == "push" or action == "reset" then
 				return prefix_filter(member_names(), cur)
 			end
 		elseif sub == "session" and action == "switch" then
@@ -210,6 +210,8 @@ local function dispatch(opts)
 			agent.agent_stop(args[3])
 		elseif action == "restart" then
 			agent.agent_restart(args[3])
+		elseif action == "fresh" then
+			agent.agent_fresh(args[3])
 		elseif action == "define" then
 			agent.agent_define()
 		elseif action == "copy" then
@@ -226,7 +228,7 @@ local function dispatch(opts)
 			agent.agent_reset(args[3], args[4])
 		else
 			usage(
-				"agent what? (add [agent] [as-name]|remove [name]|stop [name]|restart [name]|define|copy [src] [dst]|edit [name]|delete [name]|list|push [name]|overrides|reset [name] [file])"
+				"agent what? (add [agent] [as-name]|remove [name]|stop [name]|restart [name]|fresh [name]|define|copy [src] [dst]|edit [name]|delete [name]|list|push [name]|overrides|reset [name] [file])"
 			)
 		end
 	elseif sub == "session" then

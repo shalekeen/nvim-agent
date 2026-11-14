@@ -138,6 +138,13 @@ local ok_unknown, err_unknown = workspace.add_entry(named, { agent = "Nobody" },
 check("add_entry rejects unknown library agent", not ok_unknown and err_unknown:find("not found") ~= nil, tostring(err_unknown))
 
 assert_eq("add Alice (name defaults to agent)", workspace.add_entry(named, { agent = "Alice" }, cwd), true)
+check("no conversation recorded for a fresh member", workspace.get_conversation("feature-dev", "Alice", cwd) == nil)
+assert_eq("set_conversation records a title", workspace.set_conversation(named, "Alice", "Alice 2026-11-14 09:12", cwd), true)
+assert_eq("get_conversation reads it back from disk", workspace.get_conversation("feature-dev", "Alice", cwd), "Alice 2026-11-14 09:12")
+check("the title survives a manifest round-trip", workspace.read("feature-dev", cwd).agents[1].conversation == "Alice 2026-11-14 09:12")
+check("set_conversation rejects a non-member", workspace.set_conversation(named, "Nobody", "x", cwd) == false)
+assert_eq("set_conversation with nil forgets it", workspace.set_conversation(named, "Alice", nil, cwd), true)
+check("forgotten title reads as nil", workspace.get_conversation("feature-dev", "Alice", cwd) == nil and workspace.read("feature-dev", cwd).agents[1].conversation == nil)
 local on_disk = workspace.read("feature-dev", cwd)
 check("add persisted immediately", on_disk and #on_disk.agents == 1 and on_disk.agents[1].name == "Alice" and on_disk.agents[1].agent == "Alice")
 

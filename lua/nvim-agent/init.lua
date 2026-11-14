@@ -115,6 +115,9 @@ end
 function M.agent_stop(name)
 	launcher().stop_agent(name)
 end
+function M.agent_fresh(name)
+	launcher().fresh_agent(name)
+end
 
 ------------------------------------------------------------------------
 -- Agents: global library

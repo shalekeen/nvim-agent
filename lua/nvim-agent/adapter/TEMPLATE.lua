@@ -81,10 +81,16 @@ function M:get_cmd(session)
 	end
 
 	-- Conversation name ("<agent> <YYYY-MM-DD HH:MM>", set by the harness via
-	-- rename_conversation before launch). Pass it if your CLI has a flag.
+	-- rename_conversation / resume_conversation before launch). Pass it if
+	-- your CLI has a flag; add the resume flag when the harness asked to
+	-- reopen a recorded conversation (see §1d).
 	-- if session.conversation_title then
 	-- 	table.insert(cmd, "--name")
 	-- 	table.insert(cmd, session.conversation_title)
+	-- 	if session.resume_conversation then
+	-- 		table.insert(cmd, "--resume")
+	-- 		table.insert(cmd, session.conversation_title)
+	-- 	end
 	-- end
 
 	return cmd
@@ -142,6 +148,25 @@ A pre-prompt hook prepends the context files listed above to every prompt, so th
 already in your context each turn. Use the nvim-agent MCP tools for all file reads and
 edits so changes land in the user's live Neovim buffers.]]
 end
+
+------------------------------------------------------------------------
+-- §1d. resume_conversation(session, title)   ── OPTIONAL
+--
+-- The harness records each member's conversation title in the workspace
+-- manifest and, at every later launch, asks you to resume it. Return true
+-- only if your CLI still has that conversation (check its on-disk store;
+-- an unknown title must not land the user in a picker), and mark the
+-- session so get_cmd emits the resume flag. On false the harness starts a
+-- new conversation and records its title instead.
+------------------------------------------------------------------------
+-- function M:resume_conversation(session, title)
+-- 	if not my_cli_has_conversation(session.cwd, title) then
+-- 		return false
+-- 	end
+-- 	session.conversation_title = title
+-- 	session.resume_conversation = true
+-- 	return true
+-- end
 
 ------------------------------------------------------------------------
 -- §1c. get_agent_permissions(session)   ── OPTIONAL

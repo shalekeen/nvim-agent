@@ -59,6 +59,8 @@ vim.fn.mkdir(cwd, "p")
 vim.cmd("cd " .. vim.fn.fnameescape(cwd))
 
 local renamed = {}
+local resumes = {}
+local stub_can_resume = false
 local stub = {
 	get_cmd = function()
 		return { "sh", "-c", "sleep 30" }
@@ -66,6 +68,15 @@ local stub = {
 	rename_conversation = function(_, sess, title)
 		table.insert(renamed, { name = sess.name, title = title, pre = sess.conversation_title })
 		return true
+	end,
+	resume_conversation = function(_, sess, title)
+		table.insert(resumes, { name = sess.name, title = title })
+		if stub_can_resume then
+			sess.conversation_title = title
+			sess.resume_conversation = true
+			return true
+		end
+		return false
 	end,
 }
 require("nvim-agent").setup({ adapter = stub, base_dir = sandbox .. "/base", auto_open = false })
@@ -107,6 +118,9 @@ check("buffer-local vars expose session + agent", vim.b[sess.bufnr].nvim_agent_s
 check("terminal scrollback raised to Neovim's maximum", vim.bo[sess.bufnr].scrollback == 100000, vim.bo[sess.bufnr].scrollback)
 check("conversation titled '<name> <date> <time>'", (sess.conversation_title or ""):match("^helper %d%d%d%d%-%d%d%-%d%d %d%d:%d%d$") ~= nil, sess.conversation_title)
 check("adapter rename hook called at launch with the title already on the session", #renamed == 1 and renamed[1].title == sess.conversation_title and renamed[1].pre == sess.conversation_title)
+check("first launch: nothing to resume, so the resume hook is not consulted", #resumes == 0 and not sess.resume_conversation)
+check("first launch records the conversation title in the manifest", W.get_conversation(W.EPHEMERAL, "helper", cwd) == sess.conversation_title, W.get_conversation(W.EPHEMERAL, "helper", cwd))
+local first_title = sess.conversation_title
 check("statusline", require("nvim-agent").statusline() == "Agent-helper: helper @ ephemeral", require("nvim-agent").statusline())
 
 -- ---------------------------------------------------------------------------
@@ -142,7 +156,8 @@ vim.wait(2000, function()
 	return sess.jobid ~= nil
 end)
 check("relaunched into the same session object", S.get_by_name("helper") == sess and S.is_running(sess))
-check("adapter rename hook called again on relaunch", #renamed == 2 and renamed[2].name == "helper")
+check("relaunch asks the adapter to resume the recorded title", #resumes == 1 and resumes[1].title == first_title, vim.inspect(resumes))
+check("adapter could not resume: rename hook called again and a new conversation recorded", #renamed == 2 and renamed[2].name == "helper" and not sess.resume_conversation and W.get_conversation(W.EPHEMERAL, "helper", cwd) == sess.conversation_title)
 check("relaunch got a fresh terminal buffer", sess.bufnr ~= nil and sess.bufnr ~= first_bufnr)
 check("old dead buffer was deleted", not vim.api.nvim_buf_is_valid(first_bufnr))
 check("fresh buffer carries the session-name title", vim.api.nvim_buf_get_name(sess.bufnr):match("//%d+:helper$") ~= nil, vim.api.nvim_buf_get_name(sess.bufnr))
@@ -184,11 +199,51 @@ check("stop_agent keeps membership", W.find_entry(W.get_current(), "helper") ~= 
 nf = io.open(sess.active_dir .. "/user_notes.md", "w")
 nf:write("stale mirror content\n")
 nf:close()
+stub_can_resume = true
+local recorded_before = W.get_conversation(W.EPHEMERAL, "helper", cwd)
+local renames_before, resumes_before = #renamed, #resumes
 L.restart_agent("helper", cwd)
 vim.wait(2000, function()
 	return sess.jobid ~= nil
 end)
 check("restart_agent relaunches", S.is_running(sess))
+check("adapter resumed the recorded conversation: same title, flagged, no rename, manifest untouched",
+	#resumes == resumes_before + 1 and sess.resume_conversation == true and sess.conversation_title == recorded_before
+	and #renamed == renames_before and W.get_conversation(W.EPHEMERAL, "helper", cwd) == recorded_before)
+
+-- config.json conversation="fresh": never resume, even though the adapter could.
+local cfresh = io.open(sess.active_dir .. "/config.json", "w")
+cfresh:write('{"conversation": "fresh"}')
+cfresh:close()
+L.sync_session_file(sess, "config.json", true)
+check("config: conversation=fresh is read", S.config(sess).conversation == "fresh")
+renames_before, resumes_before = #renamed, #resumes
+L.stop_agent("helper")
+vim.wait(3000, function()
+	return sess.state == "exited"
+end)
+L.restart_agent("helper", cwd)
+vim.wait(2000, function()
+	return sess.jobid ~= nil
+end)
+check("conversation=fresh: resume hook skipped, new conversation named and recorded",
+	#resumes == resumes_before and #renamed == renames_before + 1 and not sess.resume_conversation
+	and W.get_conversation(W.EPHEMERAL, "helper", cwd) == sess.conversation_title)
+L.reset_overrides("helper", "config.json", cwd)
+check("config: default conversation mode is resume", S.config(sess).conversation == "resume")
+
+-- agent fresh: forget the recorded title and relaunch into a new conversation
+-- (stops a running CLI first).
+renames_before, resumes_before = #renamed, #resumes
+L.fresh_agent("helper", cwd)
+vim.wait(2000, function()
+	return sess.jobid ~= nil and S.is_running(sess)
+end)
+check("fresh_agent relaunches a running agent", S.is_running(sess))
+check("fresh_agent: no resume attempted, new conversation named and recorded",
+	#resumes == resumes_before and #renamed == renames_before + 1 and not sess.resume_conversation
+	and W.get_conversation(W.EPHEMERAL, "helper", cwd) == sess.conversation_title)
+stub_can_resume = false
 -- restart reuses the existing session without reloading files (the mirror
 -- is authoritative while the session exists); a fresh session does reload.
 S.close(sess.id)

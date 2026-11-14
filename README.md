@@ -120,6 +120,7 @@ vim.opt.statusline = "%f %m%r  %{%v:lua.require('nvim-agent').statusline()%}%=%y
 - `inbox_wakeups` (default `true`): nvim-agent periodically nudges an idle agent whose mailbox or trigger file has new content so it resumes work. Set `false` for an agent that should act only when addressed directly; `trigger_agent` wakes still reach it, and messages still arrive in its context on its next prompt.
 - `inbox_wakeup_interval` (default `30`): seconds between those checks for this agent, minimum 5. An agent is nudged only if it produced no terminal output for a whole interval and has something pending, so `300` means at most one nudge every five minutes.
 - `history` (default `"persistent"`): `"fresh"` removes the entries this Neovim instance wrote for the agent, with their index and topic links, every time its CLI launches, restarts included, so each start has a clean log. Entries written by another instance running the same workspace are left alone. Use it for agents whose past work should never colour a new session.
+- `conversation` (default `"resume"`): `"fresh"` starts a new CLI conversation on every launch of the agent instead of resuming the one recorded in the workspace manifest. Use it for agents whose previous conversation should never carry over.
 - `periodic` (default `[]`): prompts typed into the agent's terminal on a schedule. Each entry needs a `prompt` and an `interval` in seconds (minimum 5), and may set `when` to `"idle"` (the default: send only if the agent produced no terminal output for a whole interval, so a prompt never interrupts work in progress) or `"always"`. Each entry keeps its own clock. Invalid entries are dropped.
 
 Unknown keys are ignored and invalid values fall back to the defaults. Edits to the live copy take effect without a relaunch for `inbox_wakeups`, `inbox_wakeup_interval` and `periodic`; `history` is applied at the next launch.
@@ -132,12 +133,14 @@ Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/a
 {
   "name": "feature-dev",
   "agents": [
-    { "name": "Senior SWE", "agent": "Senior SWE" },
-    { "name": "Senior SWE-2", "agent": "Senior SWE" },
+    { "name": "Senior SWE", "agent": "Senior SWE", "conversation": "Senior SWE 2026-11-14 09:12" },
+    { "name": "Senior SWE-2", "agent": "Senior SWE", "conversation": "Senior SWE-2 2026-11-14 09:12" },
     { "name": "QA", "agent": "QA" }
   ]
 }
 ```
+
+Each member also records the title of its CLI **conversation**, `"<name> <YYYY-MM-DD HH:MM>"` from the launch that created it. Every later launch of that member, in a new Neovim or after a restart, resumes that conversation through the adapter instead of starting a new CLI session, so the agent keeps its context. When nothing is recorded, or the CLI no longer has the conversation, a new one is started and its title recorded; the notification says which happened. `:NvimAgent agent fresh [name]` (`<leader>aaf`) forgets the recorded title and relaunches into a new conversation. An agent whose `config.json` sets `"conversation": "fresh"` always starts new. Resuming is a per-adapter capability: the Claude Code adapter checks its session store for the title and launches with `--resume`; an adapter without the hook starts new every time.
 
 Each entry pairs a **session name** (unique within the workspace, what peers address) with the **global agent** it is built from, so the same agent can run twice. Manifests are written automatically whenever an agent is added or removed; there is no save step. The `.nvim-agent/` directory is runtime state and should be gitignored.
 
@@ -183,7 +186,8 @@ Loading a workspace while another is live asks before stopping the running agent
 :NvimAgent agent add [agent] [as-name]  " add a library agent to the live workspace and launch it
 :NvimAgent agent remove [name]          " stop it, drop it from the workspace, delete its overrides
 :NvimAgent agent stop [name]            " stop its CLI; it stays a member
-:NvimAgent agent restart [name]         " relaunch an exited member
+:NvimAgent agent restart [name]         " relaunch an exited member (resumes its conversation)
+:NvimAgent agent fresh [name]           " forget the recorded conversation and relaunch into a new one
 :NvimAgent agent push [name]            " promote a member's files to the global agent, clear overrides
 :NvimAgent agent overrides              " show which files each member overrides
 :NvimAgent agent reset [name] [file]    " drop one/all overrides and reload from the global agent
@@ -218,7 +222,7 @@ A `<leader>a` group is registered via which-key. The most used bindings:
 | `<leader>am` | Type a message into an agent's terminal |
 | `<leader>ao` / `<leader>aT` | Open / toggle the current agent terminal |
 | `<leader>aw…` | Workspaces: `n`ew, `l`oad, `L`ist, `r`emove, `R`ename, `s`ave-as |
-| `<leader>aa…` | Agents: `a`dd, `r`emove, `s`top, `R`estart, `d`efine, `c`opy, `e`dit global, `x` delete, `l`ist, `p`ush, `o`verrides, `z` reset |
+| `<leader>aa…` | Agents: `a`dd, `r`emove, `s`top, `R`estart, `f`resh conversation, `d`efine, `c`opy, `e`dit global, `x` delete, `l`ist, `p`ush, `o`verrides, `z` reset |
 | `<leader>an…` / `<leader>ad…` / `<leader>as…` | Notes / pinned dirs / system prompt: `a`dd, `e`dit, `v`iew, `d`elete. Each asks which agent when more than one is live, and saves as a workspace override. |
 | `<leader>aR` | Edit the picked agent's role for this workspace |
 | `<leader>av` / `<leader>ae` | View an agent's context grid / the shared ephemeral context |
@@ -313,7 +317,7 @@ Each workspace keeps its agents' work history as an **Obsidian vault** at `<cwd>
 
 ```
 <cwd>/.nvim-agent/
-├── workspaces/<name>/workspace.json   # { "name", "agents": [{ "name", "agent" }] }, saved on every change
+├── workspaces/<name>/workspace.json   # { "name", "agents": [{ "name", "agent", "conversation" }] }, saved on every change
 ├── workspaces/<name>/<session>/       # that member's override files for this workspace only
 │   ├── user_notes.md                  #   any of the agent's files may appear here;
 │   └── persistent_dirs.json           #   present = used instead of the global one

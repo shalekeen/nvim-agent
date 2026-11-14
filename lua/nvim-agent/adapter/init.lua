@@ -80,6 +80,21 @@ function M.base:rename_conversation(session, title)
 	return false
 end
 
+--- Resume the CLI conversation named `title` at this session's next launch,
+--- instead of starting a new one. The harness calls it before `get_cmd` with
+--- the title it recorded for this member in the workspace manifest. Return
+--- true only if the CLI has that conversation and will reopen it; set
+--- `session.resume_conversation = true` and `session.conversation_title`
+--- so `get_cmd` can emit the right flags. On false the harness mints a new
+--- title, calls `rename_conversation`, and records that instead. Base: the
+--- CLI cannot resume, so every launch is a new conversation.
+--- @param session table
+--- @param title string
+--- @return boolean
+function M.base:resume_conversation(session, title)
+	return false
+end
+
 function M.base:on_enter(bufnr)
 	-- no-op by default; adapters can override to run code when entering the agent buffer
 end

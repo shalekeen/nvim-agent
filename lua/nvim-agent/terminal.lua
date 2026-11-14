@@ -203,12 +203,36 @@ local function launch_session_in_window(sess, win, adapter)
 		require("nvim-agent.mcp.history").forget_agent(history_dir, sess.name, require("nvim-agent.session").instance_id)
 	end
 
-	-- Name the CLI's conversation after the agent and this launch time, so the
-	-- CLI's own session list / terminal title identify it. Recorded on the
-	-- session first so adapters can pass it as a launch flag from get_cmd.
-	sess.conversation_title = M.conversation_title(sess)
-	if type(adapter.rename_conversation) == "function" then
-		adapter:rename_conversation(sess, sess.conversation_title)
+	-- Conversation: resume the one recorded for this member in the workspace
+	-- manifest when the adapter can; otherwise start a new one named after the
+	-- agent and this launch time, and record that title. The title sits on the
+	-- session before get_cmd so the adapter can turn it into launch flags.
+	local manifest = (ws.get_current() and ws.get_current().name == ws_name) and ws.get_current()
+		or ws.read(ws_name, cwd)
+	local recorded = ws.get_conversation(ws_name, sess.name, cwd)
+	sess.resume_conversation = nil
+	if
+		recorded
+		and require("nvim-agent.session").config(sess).conversation ~= "fresh"
+		and type(adapter.resume_conversation) == "function"
+		and adapter:resume_conversation(sess, recorded)
+	then
+		sess.conversation_title = recorded
+		sess.resume_conversation = true
+		vim.notify("nvim-agent: '" .. sess.name .. "' resuming conversation '" .. recorded .. "'", vim.log.levels.INFO)
+	else
+		sess.conversation_title = M.conversation_title(sess)
+		if type(adapter.rename_conversation) == "function" then
+			adapter:rename_conversation(sess, sess.conversation_title)
+		end
+		if manifest then
+			ws.set_conversation(manifest, sess.name, sess.conversation_title, cwd)
+		end
+		vim.notify(
+			"nvim-agent: '" .. sess.name .. "' new conversation '" .. sess.conversation_title .. "'"
+				.. (recorded and (" (could not resume '" .. recorded .. "')") or ""),
+			vim.log.levels.INFO
+		)
 	end
 
 	-- CLI-specific environment from the adapter; the harness's own variables

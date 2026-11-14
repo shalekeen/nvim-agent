@@ -364,6 +364,50 @@ function M.remove_entry(manifest, session_name, cwd)
 end
 
 ------------------------------------------------------------------------
+-- Conversations
+--
+-- Each member records the title of its CLI conversation
+-- ("<name> <YYYY-MM-DD HH:MM>", minted at the launch that created it). On
+-- later launches the adapter resumes that conversation instead of starting
+-- a new CLI session from scratch.
+------------------------------------------------------------------------
+
+--- The recorded conversation title for a member, read fresh from disk, or
+--- nil when none has been recorded.
+--- @param name string  workspace
+--- @param session_name string
+--- @param cwd string|nil
+--- @return string|nil
+function M.get_conversation(name, session_name, cwd)
+	local m = M.read(name, cwd)
+	if not m then
+		return nil
+	end
+	local e = M.find_entry(m, session_name)
+	if e and type(e.conversation) == "string" and e.conversation ~= "" then
+		return e.conversation
+	end
+	return nil
+end
+
+--- Record (or, with nil, forget) a member's conversation title and persist.
+--- @param manifest table
+--- @param session_name string
+--- @param title string|nil
+--- @param cwd string|nil
+--- @return boolean ok, string|nil err
+function M.set_conversation(manifest, session_name, title, cwd)
+	refresh_members(manifest, cwd)
+	local e = M.find_entry(manifest, session_name)
+	if not e then
+		return false, "'" .. session_name .. "' is not in workspace '" .. manifest.name .. "'"
+	end
+	e.conversation = (type(title) == "string" and title ~= "") and title or nil
+	M.save(manifest, cwd)
+	return true
+end
+
+------------------------------------------------------------------------
 -- Per-workspace overrides
 --
 --   workspaces/<ws>/<session_name>/<file>

@@ -825,6 +825,55 @@ end
 --- Relaunch an exited member (or one whose session was never created).
 --- @param name string|nil  session name; nil → picker over non-running members
 --- @param cwd string|nil
+--- Start a NEW conversation for a member: forget the recorded conversation
+--- title, stop the CLI if it is running, and relaunch. The next launch mints
+--- "<name> <now>" and records it; the old conversation stays in the CLI's own
+--- history.
+--- @param name string|nil  prompts when nil
+--- @param cwd string|nil
+function M.fresh_agent(name, cwd)
+	cwd = cwd or workspace_mod().cwd()
+	local m = require_live_workspace()
+	if not m then
+		return
+	end
+	local ws = workspace_mod()
+	local sm = session_mod()
+
+	local function do_fresh(n)
+		if not ws.find_entry(m, n) then
+			return notify("'" .. n .. "' is not in workspace '" .. m.name .. "'", vim.log.levels.ERROR)
+		end
+		local sess = sm.get_by_name(n)
+		if sess and sm.is_running(sess) then
+			terminal().stop(sess.id)
+			vim.wait(5000, function()
+				return not sm.is_running(sess)
+			end, 50)
+			if sm.is_running(sess) then
+				return notify("agent '" .. n .. "' did not stop; try again", vim.log.levels.ERROR)
+			end
+		end
+		ws.set_conversation(m, n, nil, cwd)
+		M.restart_agent(n, cwd)
+	end
+
+	if name and name ~= "" then
+		return do_fresh(name)
+	end
+	local names = vim.tbl_map(function(e)
+		return e.name
+	end, m.agents or {})
+	if #names == 0 then
+		return notify("workspace '" .. m.name .. "' has no agents")
+	end
+	ui().select(names, { prompt = "New conversation for agent", width = 70 }, function(choice)
+		if choice then
+			do_fresh(choice)
+		end
+	end)
+end
+
 function M.restart_agent(name, cwd)
 	cwd = cwd or workspace_mod().cwd()
 	local m = require_live_workspace()

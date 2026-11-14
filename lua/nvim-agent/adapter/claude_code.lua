@@ -144,10 +144,17 @@ function M:get_cmd(session)
 	}
 
 	-- Session display name (prompt box, /resume picker, terminal title); set
-	-- by rename_conversation before launch.
+	-- by rename_conversation / resume_conversation before launch.
 	if type(session.conversation_title) == "string" and session.conversation_title ~= "" then
 		table.insert(cmd, "--name")
 		table.insert(cmd, session.conversation_title)
+		-- Reopen the recorded conversation by its title (resume_conversation
+		-- verified it exists on disk; an unknown title would drop the CLI
+		-- into its session picker).
+		if session.resume_conversation then
+			table.insert(cmd, "--resume")
+			table.insert(cmd, session.conversation_title)
+		end
 	end
 
 	if vim.fn.filereadable(mcp_config) == 1 then
@@ -189,6 +196,64 @@ function M:rename_conversation(session, title)
 		-- Running: /rename takes effect immediately in the live session.
 		vim.fn.chansend(session.jobid, "/rename " .. title .. "\r")
 	end
+	return true
+end
+
+--- Claude Code's per-project session store: `<config dir>/projects/<cwd with
+--- every non-alphanumeric byte replaced by "-">/<session-id>.jsonl`.
+--- @param cwd string
+--- @return string
+function M.project_dir(cwd)
+	local base = os.getenv("CLAUDE_CONFIG_DIR")
+	if not base or base == "" then
+		base = vim.fn.expand("~/.claude")
+	end
+	return base .. "/projects/" .. (cwd:gsub("[^A-Za-z0-9]", "-"))
+end
+
+--- Does a Claude Code session titled `title` exist for `cwd`? `--name` writes
+--- a `{"type":"custom-title","customTitle":...}` record into the transcript,
+--- which is what `--resume <title>` matches.
+--- @param cwd string
+--- @param title string
+--- @return boolean
+function M.has_conversation(cwd, title)
+	local dir = M.project_dir(cwd)
+	if vim.fn.isdirectory(dir) ~= 1 then
+		return false
+	end
+	local needle = '"customTitle":' .. vim.json.encode(title)
+	for _, name in ipairs(vim.fn.readdir(dir)) do
+		if name:match("%.jsonl$") then
+			local f = io.open(dir .. "/" .. name, "rb")
+			if f then
+				for line in f:lines() do
+					if line:find(needle, 1, true) then
+						f:close()
+						return true
+					end
+				end
+				f:close()
+			end
+		end
+	end
+	return false
+end
+
+--- Resume the Claude Code session titled `title` at the next launch, if it
+--- exists for this session's cwd; get_cmd then adds `--resume <title>`.
+--- @param session table
+--- @param title string
+--- @return boolean
+function M:resume_conversation(session, title)
+	if type(title) ~= "string" or title == "" then
+		return false
+	end
+	if not M.has_conversation(session.cwd or vim.fn.getcwd(), title) then
+		return false
+	end
+	session.conversation_title = title
+	session.resume_conversation = true
 	return true
 end
 

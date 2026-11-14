@@ -161,6 +161,29 @@ do
 	local i = vim.fn.index(argv, "--name")
 	check("claude_code get_cmd passes the title as --name", i >= 0 and argv[i + 2] == "qa 2026-11-09 10:00", table.concat(argv, " "):sub(1, 80))
 	check("claude_code get_cmd omits --name without a title", vim.fn.index(cc:get_cmd({ active_dir = tmp_active, dir = fake.dir, name = "qa" }), "--name") == -1)
+	check("claude_code get_cmd omits --resume unless resuming", vim.fn.index(argv, "--resume") == -1)
+
+	-- Resume: the title must exist in Claude Code's per-project session store
+	-- (<CLAUDE_CONFIG_DIR>/projects/<encoded cwd>/*.jsonl, custom-title record).
+	local cfg_dir = sandbox .. "/claude-config"
+	local fake_cwd = sandbox .. "/proj_x"
+	vim.env.CLAUDE_CONFIG_DIR = cfg_dir
+	check("claude_code project dir encodes every non-alphanumeric byte as '-'",
+		cc.project_dir(fake_cwd) == cfg_dir .. "/projects/" .. (fake_cwd:gsub("[^A-Za-z0-9]", "-")), cc.project_dir(fake_cwd))
+	local rs = { active_dir = tmp_active, dir = fake.dir, name = "qa", cwd = fake_cwd }
+	check("claude_code resume_conversation is false when the store does not exist", cc:resume_conversation(rs, "qa 2026-11-14 09:00") == false and not rs.resume_conversation)
+	vim.fn.mkdir(cc.project_dir(fake_cwd), "p")
+	local tf = io.open(cc.project_dir(fake_cwd) .. "/11111111-2222-4333-8444-555555555555.jsonl", "w")
+	tf:write('{"type":"custom-title","customTitle":"qa 2026-11-14 09:00","sessionId":"11111111-2222-4333-8444-555555555555"}\n')
+	tf:write('{"type":"user","message":{"role":"user","content":"hello"}}\n')
+	tf:close()
+	check("claude_code resume_conversation is false for an unknown title", cc:resume_conversation(rs, "qa 2026-11-14 09:01") == false)
+	check("claude_code resume_conversation finds the recorded title", cc:resume_conversation(rs, "qa 2026-11-14 09:00") == true and rs.resume_conversation == true and rs.conversation_title == "qa 2026-11-14 09:00")
+	local rargv = cc:get_cmd(rs)
+	local ri = vim.fn.index(rargv, "--resume")
+	check("claude_code get_cmd resumes by title and keeps --name", ri >= 0 and rargv[ri + 2] == "qa 2026-11-14 09:00" and vim.fn.index(rargv, "--name") >= 0, table.concat(rargv, " "):sub(-120))
+	check("base resume_conversation is false", base:resume_conversation(rs, "qa 2026-11-14 09:00") == false)
+	vim.env.CLAUDE_CONFIG_DIR = nil
 	-- A live job: the rename is typed into the terminal as /rename.
 	local got = ""
 	local job = vim.fn.jobstart({ "cat" }, { pty = true, on_stdout = function(_, d) got = got .. table.concat(d, "\n") end })
