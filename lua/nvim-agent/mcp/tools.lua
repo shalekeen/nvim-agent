@@ -245,7 +245,7 @@ M.definitions = {
 
 	{
 		name = "execute_command",
-		description = "Execute a Neovim ex command and return its output (e.g. 'w' to save, 'set number', 'grep foo **/*.lua'). Returns the captured command output. The user's window, buffer, cursor and mode are restored afterwards, so this cannot be used to show the user a file: do not run navigation commands (edit, buffer, split, tabnew, copen); they are undone.",
+		description = "Execute a Neovim ex command and return its output (e.g. 'w' to save, 'set number', 'grep foo **/*.lua'). Returns the captured command output. The user's window, buffer, cursor and mode are restored afterwards, so this cannot be used to show the user a file: do not run navigation or cursor-moving commands (edit, buffer, split, tabnew, copen, normal G, search); they are undone. Anything that would change the user's cursor or view requires their explicit request first.",
 		inputSchema = {
 			type = "object",
 			properties = {
@@ -343,7 +343,7 @@ M.definitions = {
 
 	{
 		name = "set_cursor",
-		description = "Move the cursor in a FILE window: the window showing `filepath` when given, otherwise the file the user was last editing. Never touches the user's agent terminal or changes which window is focused. Errors when no file window is visible.",
+		description = "Move the USER'S cursor in a FILE window: the window showing `filepath` when given, otherwise the file the user was last editing. This alters the user's editing position, so call it ONLY when the user has explicitly asked you to move their cursor in this conversation; never as part of an edit, a review, or to point something out — state the path and line in your reply instead. Never touches the agent terminal or changes which window is focused. Errors when no file window is visible.",
 		inputSchema = {
 			type = "object",
 			properties = {
