@@ -11,7 +11,7 @@ A Neovim plugin that hosts one or more terminal-based coding agents (Claude Code
 - **Workspaces** per project that remember which agents run together, saved automatically on every change
 - An **ephemeral workspace** that is created the first time you open a project, so you can start in seconds and promote it to a named workspace later
 - Bundled **MCP server** so agents can read/write buffers, search files, and coordinate with peers directly through your editor
-- Auto-injected context (open buffers, cursor, git status, diagnostics, tmux pane captures) before every prompt, shared by every agent in the Neovim instance
+- Auto-injected context (open buffers, last cursor position, diagnostics, tmux pane captures) before every prompt, shared by every agent in the Neovim instance
 - Multi-agent messaging: agents send messages, broadcast status, delegate work, and can spawn or relaunch each other
 - Pluggable **adapter** interface — ships with a Claude Code adapter; add your own
 
@@ -64,7 +64,7 @@ return {
 | `adapter` | `nil` | Adapter to use. Built-in: `"claude_code"`. May also be a custom adapter table. |
 | `auto_open` | `false` | When `true`, show the startup picker (or, on first launch in a directory, the agent picker for the ephemeral workspace) as soon as Neovim starts. When `false`, nothing happens until you run `:NvimAgent`. |
 | `base_dir` | `~/.nvim-agent` | Where the agent library, session dirs, and hook scripts live. |
-| `auto_write_context` | `true` | Refresh `ephemeral.json` when switching to an agent buffer. |
+| `auto_write_context` | `true` | Refresh `ephemeral.json` whenever you enter or leave a file buffer (never on agent terminals), so agents see the file and cursor you were last in. |
 | `terminal.split_direction` | `"vertical"` | `"vertical"` or `"horizontal"`. |
 | `terminal.split_size` | `0.4` | Fraction of the screen the agent split takes. |
 | `terminal.scrollback` | `100000` | Lines of terminal scrollback kept per agent buffer (Neovim's default is 10000; 100000 is its maximum). The Claude Code adapter also launches the CLI with `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`: its fullscreen renderer draws on the alternate screen, for which Neovim keeps no scrollback, so inside Neovim the inline renderer is forced regardless of your global `tui` setting. |
@@ -265,7 +265,7 @@ Claude Code runs the hook before every prompt and prepends the hook's stdout to 
   - `persistent_dirs.json` — pinned code paths
 - **Project root**: `PROJECT.md` (if present) — shared by all agents in the project
 - **Process-shared** (from `$NVIM_AGENT_PROCESS_DIR`):
-  - `ephemeral.json` — open buffers, cursor, git status, diagnostics, quickfix
+  - `ephemeral.json` — open buffers, the file and cursor you were last editing, diagnostics, quickfix (no git: agents run it themselves)
   - `tmux_captures.json` — captured tmux pane content (if any)
 - **Instance-local** (from `$NVIM_AGENT_RUNTIME_DIR`):
   - Pending messages addressed to this session

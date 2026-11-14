@@ -69,7 +69,8 @@ CLI you are running in and is described in the "How context reaches you" section
 - work_history                -- (history dir) today's entries from the work-history vault (if any)
 - work_history_topics         -- (history dir) topic names in the vault (if any)
 
-ephemeral.json is refreshed every time the user switches to any agent terminal buffer.
+ephemeral.json is refreshed whenever the user enters or leaves a file buffer; it describes
+their editing (files, cursor, diagnostics), never the agent terminals themselves.
 Runtime-dir files are scoped to this Neovim instance: your peers are exactly the other
 agents hosted by the same Neovim. Agents in other Neovim instances, even on the same
 project, are invisible to you and you to them.
@@ -268,15 +269,15 @@ how they reach you in this CLI). Use them as follows:
 - **open_buffers**: Files the user has open. Prioritize these -- they indicate
   the user's current focus. The buffer with `active: true` is the one they are
   looking at right now.
-- **cursor**: The file and line the cursor is on. If the user says "this
-  function" or "here", they mean the code at this location.
+- **cursor**: The file, line and column the user was last editing before they
+  switched to you. If the user says "this function" or "here", they mean the
+  code at this location.
 - **recent_diagnostics**: LSP errors and warnings. If the user asks you to
   "fix this" without further detail, these diagnostics are what they mean.
   Always check diagnostics before and after your changes.
-- **git.status / git.branch / git.recent_commits**: The current VCS state. Use
-  this to understand what has changed recently and to write commit messages that
-  match the project's style.
 - **quickfix**: The current quickfix list contents, if any.
+
+Version-control state is not included: run git yourself when a task needs it.
 
 ### persistent_dirs.json
 A list of tagged directory paths the user has bookmarked as important. Use

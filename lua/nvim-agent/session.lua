@@ -55,6 +55,13 @@ local function process_dir_path()
 	return config.get().base_dir .. "/sessions/" .. M.instance_id
 end
 
+--- This Neovim instance's process dir: `~/.nvim-agent/sessions/<instance-id>/`,
+--- shared by all of its sessions (holds ephemeral.json).
+--- @return string
+function M.process_dir()
+	return process_dir_path()
+end
+
 --- Create a session for `agent_name` under the session name `name`.
 --- Returns nil + error on a duplicate or invalid name.
 --- @param name string        Session name (unique within this instance)

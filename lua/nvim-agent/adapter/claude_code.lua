@@ -359,7 +359,7 @@ end
 --- prefix caching can reuse the longest possible cached prefix between
 --- prompts. Anything that is likely to be byte-identical across consecutive
 --- prompts (role, project doc, flavor metadata) goes first; the most
---- volatile content (ephemeral editor state, refreshed on every BufEnter)
+--- volatile content (ephemeral editor state, refreshed as the user moves between files)
 --- goes last.
 local function hook_script_content()
 	return [[#!/usr/bin/env bash
@@ -478,8 +478,8 @@ if [ -n "$RUNTIME_DIR" ] && [ -n "$SESSION_NAME" ]; then
 fi
 
 # --- 6. Editor state (most volatile — kept last to maximize prefix cache) ---
-# ephemeral.json is rewritten on every BufEnter of any agent buffer in this
-# Neovim process, so it's the section most likely to differ between prompts.
+# ephemeral.json is rewritten whenever the user enters or leaves a file buffer
+# in this Neovim process, so it's the section most likely to differ between prompts.
 if [ -n "$PROCESS_DIR" ] && [ -f "$PROCESS_DIR/ephemeral.json" ]; then
     echo "--- ephemeral.json ---"
     cat "$PROCESS_DIR/ephemeral.json"

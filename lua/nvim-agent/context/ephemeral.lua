@@ -1,16 +1,39 @@
+-- Ephemeral editor state: what only Neovim knows. Open file buffers, the
+-- file and cursor the user was last working in, diagnostics, quickfix.
+-- Nothing here shells out: the snapshot is a handful of API reads. Anything
+-- an agent can discover itself (git, the filesystem) is deliberately absent.
+--
+-- The snapshot is written when the user enters or leaves a FILE buffer, so
+-- it describes their editing and never the agent terminals themselves.
 local M = {}
 
--- Git state is gathered ASYNCHRONOUSLY and cached. gather() is called on
--- every BufEnter of an agent terminal (and at launch); shelling out to git
--- there used to block Neovim for the duration of three `git` invocations,
--- which on a large or recently-touched repository (index refresh) can be
--- seconds — felt as a hang when switching between agent windows. Now the
--- snapshot uses the last known git state, and a background refresh rewrites
--- the context file when it lands.
-M.GIT_TTL_MS = 2000
-M._git = { info = nil, at = 0, inflight = false, cwd = nil }
+-- Last file buffer the user was in, and the cursor there. Recorded by the
+-- autocmds on BufEnter/BufLeave of file buffers so the snapshot still knows
+-- "where the user was" after they switch into an agent terminal.
+M.last_file = nil
 
-local function get_open_buffers()
+--- Record the user's position in a file buffer. No-op for non-file buffers.
+--- @param bufnr integer
+--- @param win integer|nil  window showing it (defaults to the current window)
+--- @return boolean recorded
+function M.note_file_buffer(bufnr, win)
+    if not vim.api.nvim_buf_is_valid(bufnr) or vim.bo[bufnr].buftype ~= "" then
+        return false
+    end
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if name == "" then
+        return false
+    end
+    win = win or vim.api.nvim_get_current_win()
+    if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= bufnr then
+        return false
+    end
+    local pos = vim.api.nvim_win_get_cursor(win)
+    M.last_file = { bufnr = bufnr, file = name, line = pos[1], col = pos[2] }
+    return true
+end
+
+local function get_open_buffers(active_bufnr)
     local bufs = {}
     for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
         if vim.api.nvim_buf_is_loaded(bufnr) then
@@ -21,6 +44,7 @@ local function get_open_buffers()
                     path = name,
                     modified = vim.bo[bufnr].modified,
                     filetype = vim.bo[bufnr].filetype,
+                    active = bufnr == active_bufnr or nil,
                 })
             end
         end
@@ -28,87 +52,17 @@ local function get_open_buffers()
     return bufs
 end
 
+--- The file and cursor the user is (or was last) working in: the current
+--- buffer when it is a file, otherwise the last file buffer recorded.
 local function get_cursor_context()
     local bufnr = vim.api.nvim_get_current_buf()
-    local name = vim.api.nvim_buf_get_name(bufnr)
-    if name == "" or vim.bo[bufnr].buftype ~= "" then
-        return nil
+    if vim.bo[bufnr].buftype == "" and vim.api.nvim_buf_get_name(bufnr) ~= "" then
+        local pos = vim.api.nvim_win_get_cursor(0)
+        return { bufnr = bufnr, file = vim.api.nvim_buf_get_name(bufnr), line = pos[1], col = pos[2] }
     end
-    local pos = vim.api.nvim_win_get_cursor(0)
-    return {
-        file = name,
-        line = pos[1],
-        col = pos[2],
-    }
-end
-
--- One shell invocation; sections separated by NUL. An empty first section
--- means "not a git repository".
-local GIT_PROBE = "git rev-parse --abbrev-ref HEAD 2>/dev/null; printf '\\0'; git status --porcelain 2>/dev/null; printf '\\0'; git log --oneline -5 2>/dev/null"
-
-local function parse_git_probe(out)
-    local parts = vim.split(out or "", "\0", { plain = true })
-    local branch = vim.trim(parts[1] or "")
-    if branch == "" then
-        return nil
-    end
-    local commits = {}
-    for line in (parts[3] or ""):gmatch("[^\n]+") do
-        table.insert(commits, line)
-    end
-    return {
-        branch = branch,
-        status = vim.trim(parts[2] or ""),
-        recent_commits = commits,
-    }
-end
-
---- Refresh the cached git state in the background. `on_done(changed)` runs
---- on the main loop when the probe finishes (changed = the cache was
---- updated). A refresh is skipped while one is in flight or the cache is
---- younger than GIT_TTL_MS for the same cwd.
---- @param cwd string
---- @param on_done fun(changed: boolean)|nil
-function M.refresh_git(cwd, on_done)
-    local g = M._git
-    local now = (vim.uv or vim.loop).now()
-    if g.inflight or (g.cwd == cwd and now - g.at < M.GIT_TTL_MS) then
-        if on_done then
-            on_done(false)
-        end
-        return
-    end
-    if not vim.system then
-        -- Neovim < 0.10: no async process API; leave git out rather than block.
-        if on_done then
-            on_done(false)
-        end
-        return
-    end
-    g.inflight = true
-    local ok = pcall(vim.system, { "sh", "-c", GIT_PROBE }, { cwd = cwd, text = true, timeout = 10000 }, function(res)
-        vim.schedule(function()
-            g.inflight = false
-            g.at = (vim.uv or vim.loop).now()
-            g.cwd = cwd
-            g.info = res.code == 0 and parse_git_probe(res.stdout) or nil
-            if on_done then
-                on_done(true)
-            end
-        end)
-    end)
-    if not ok then
-        g.inflight = false
-        if on_done then
-            on_done(false)
-        end
-    end
-end
-
-local function get_git_info(cwd)
-    local g = M._git
-    if g.cwd == cwd then
-        return g.info
+    local last = M.last_file
+    if last and vim.api.nvim_buf_is_valid(last.bufnr) and vim.api.nvim_buf_is_loaded(last.bufnr) then
+        return last
     end
     return nil
 end
@@ -158,16 +112,14 @@ local function get_quickfix_entries()
     return entries
 end
 
---- Snapshot of editor state. Never blocks: git comes from the cache (nil
---- until the first background probe lands); call refresh_git() to update it.
+--- Snapshot of editor state. Pure API reads; never blocks.
 function M.gather()
-    local cwd = vim.fn.getcwd()
+    local cursor = get_cursor_context()
     return {
         timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-        cwd = cwd,
-        open_buffers = get_open_buffers(),
-        cursor = get_cursor_context(),
-        git = get_git_info(cwd),
+        cwd = vim.fn.getcwd(),
+        open_buffers = get_open_buffers(cursor and cursor.bufnr),
+        cursor = cursor and { file = cursor.file, line = cursor.line, col = cursor.col } or nil,
         recent_diagnostics = get_recent_diagnostics(),
         quickfix = get_quickfix_entries(),
     }

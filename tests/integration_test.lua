@@ -149,35 +149,29 @@ check("base contract carries no Claude Code vocabulary", not base_contract:find(
 local base_perms = base:get_agent_permissions({ active_dir = tmp_active })
 check("base permissions grant nothing", type(base_perms) == "table" and #base_perms.allow == 0 and #base_perms.deny == 0)
 
--- Ephemeral context never blocks on git: the snapshot carries the cached
--- state (nil before the first probe) and a background refresh fills it in.
+-- Ephemeral snapshot: pure editor state, no git, cursor from the last file.
 do
 	local eph = require("nvim-agent.context.ephemeral")
-	local orig_cwd = vim.fn.getcwd()
-	local repo = sandbox .. "/repo"
-	vim.fn.mkdir(repo, "p")
-	vim.fn.system({ "git", "-C", repo, "init", "-q" })
-	vim.fn.system({ "git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "first" })
-	vim.cmd("cd " .. vim.fn.fnameescape(repo))
 	local uv = vim.uv or vim.loop
+	local file = sandbox .. "/notes.txt"
+	vim.fn.writefile({ "one", "two", "three", "four" }, file)
+	vim.cmd("edit " .. vim.fn.fnameescape(file))
+	vim.api.nvim_win_set_cursor(0, { 3, 2 })
 	local t0 = uv.hrtime()
 	local snap = eph.gather()
 	local gather_ms = (uv.hrtime() - t0) / 1e6
-	check("gather() does not block on git (no cached state yet → git=nil)", snap.git == nil and gather_ms < 200, string.format("git=%s %.1fms", vim.inspect(snap.git), gather_ms))
-	local landed = nil
-	eph.refresh_git(repo, function(changed) landed = changed end)
-	vim.wait(5000, function() return landed ~= nil end, 20)
-	check("background git probe lands and updates the cache", landed == true and eph._git.info ~= nil and eph._git.info.branch ~= "" and #eph._git.info.recent_commits == 1, vim.inspect(eph._git.info))
-	check("gather() now carries the cached git state", eph.gather().git ~= nil and eph.gather().git.recent_commits[1]:find("first", 1, true) ~= nil)
-	local again = nil
-	eph.refresh_git(repo, function(changed) again = changed end)
-	check("a refresh inside the TTL is skipped without blocking", again == false)
-	eph._git.at = 0
-	local other = nil
-	eph.refresh_git(sandbox, function(changed) other = changed end)
-	vim.wait(5000, function() return other ~= nil end, 20)
-	check("probe outside a repository caches nil and gather() reports no git", other == true and eph._git.info == nil and eph.gather().git == nil)
-	vim.cmd("cd " .. vim.fn.fnameescape(orig_cwd))
+	check("gather() is cheap and never shells out", gather_ms < 100 and snap.git == nil, string.format("%.1fms git=%s", gather_ms, vim.inspect(snap.git)))
+	check("cursor comes from the current file buffer", snap.cursor and snap.cursor.file == file and snap.cursor.line == 3 and snap.cursor.col == 2, vim.inspect(snap.cursor))
+	check("the file is listed as the active open buffer", vim.tbl_contains(vim.tbl_map(function(b) return b.active and b.path or "" end, snap.open_buffers), file))
+	-- Leaving the file for a non-file buffer: the snapshot keeps the last file.
+	check("note_file_buffer records the file position", eph.note_file_buffer(vim.api.nvim_get_current_buf()) and eph.last_file.line == 3)
+	local scratch = vim.api.nvim_create_buf(false, true)
+	vim.bo[scratch].buftype = "nofile"
+	vim.api.nvim_set_current_buf(scratch)
+	check("note_file_buffer ignores non-file buffers", eph.note_file_buffer(scratch) == false)
+	local snap2 = eph.gather()
+	check("from a non-file buffer the cursor is the last file position", snap2.cursor and snap2.cursor.file == file and snap2.cursor.line == 3, vim.inspect(snap2.cursor))
+	check("non-file buffers are not listed", not vim.tbl_contains(vim.tbl_map(function(b) return b.path end, snap2.open_buffers), vim.api.nvim_buf_get_name(scratch)))
 end
 
 -- The bundled Claude Code adapter: hook contract, profiles from the session mirror.

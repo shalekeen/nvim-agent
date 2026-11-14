@@ -166,8 +166,9 @@ function M.register()
 	local group = vim.api.nvim_create_augroup("NvimAgent", { clear = true })
 	local config = require("nvim-agent.config")
 
-	-- Refresh ephemeral context when entering an agent terminal buffer and
-	-- mark that session current.
+	-- Entering an agent terminal marks that session current and lets the
+	-- adapter react. Nothing is gathered here: the snapshot describes the
+	-- user's editing, not the agent terminals.
 	vim.api.nvim_create_autocmd("BufEnter", {
 		group = group,
 		callback = function(ev)
@@ -178,12 +179,6 @@ function M.register()
 					session_mod.set_current(sess.id)
 				end
 
-				if config.get().auto_write_context and sess then
-					vim.schedule(function()
-						require("nvim-agent.context").write_all(sess.active_dir, sess.process_dir)
-					end)
-				end
-
 				vim.schedule(function()
 					local adapter = require("nvim-agent.adapter").get_active()
 					if adapter and adapter.on_enter then
@@ -192,7 +187,38 @@ function M.register()
 				end)
 			end
 		end,
-		desc = "nvim-agent: write context on agent buffer enter",
+		desc = "nvim-agent: mark session current on agent buffer enter",
+	})
+
+	-- Ephemeral editor state is captured when the user enters or LEAVES a
+	-- file buffer: the leave is what records the file and cursor they were
+	-- just in before switching to an agent. Writes are coalesced per event
+	-- loop turn and skipped while no agent session exists.
+	M._eph_pending = false
+	local function schedule_ephemeral_write()
+		if M._eph_pending or not config.get().auto_write_context then
+			return
+		end
+		M._eph_pending = true
+		vim.schedule(function()
+			M._eph_pending = false
+			local session_mod = require("nvim-agent.session")
+			if #session_mod.list() == 0 then
+				return
+			end
+			require("nvim-agent.context").write_ephemeral(session_mod.process_dir())
+		end)
+	end
+	M.schedule_ephemeral_write = schedule_ephemeral_write
+
+	vim.api.nvim_create_autocmd({ "BufEnter", "BufLeave" }, {
+		group = group,
+		callback = function(ev)
+			if require("nvim-agent.context.ephemeral").note_file_buffer(ev.buf) then
+				schedule_ephemeral_write()
+			end
+		end,
+		desc = "nvim-agent: snapshot editor state on entering/leaving a file buffer",
 	})
 
 	-- Warn when quitting with running agents.

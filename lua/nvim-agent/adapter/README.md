@@ -31,7 +31,7 @@ points. Implement the ones whose lifecycle hook you need.
 | `setup_session_mcp(session)` | Before each session's `termopen` (from `terminal.open`) | ❌ | Write per-session config the CLI reads at launch (typically MCP server pointer + injection hook). Fresh every session, no idempotency required. |
 | `setup_project_permissions(cwd)` | When a workspace is launched (`launcher.lua`) | ❌ | Write per-project CLI config so agents in that project don't get hammered with permission prompts. Idempotent. |
 | `setup_buffer_keymaps(bufnr)` | Once per session terminal buffer (from `terminal.open`) | ❌ | Add buffer-local keymaps for the terminal (e.g. `<Esc><Esc>` to leave terminal mode). |
-| `on_enter(bufnr)` | Every `BufEnter` of a session terminal (from `autocmds.lua`) | ❌ | Sync state / refresh ephemeral context when the user looks at the buffer. The harness already refreshes `ephemeral.json` here, so most adapters can skip this. |
+| `on_enter(bufnr)` | Every `BufEnter` of a session terminal (from `autocmds.lua`) | ❌ | React when the user looks at the buffer. The harness refreshes `ephemeral.json` as the user moves between file buffers, not here, so most adapters can skip this. |
 
 Only `get_cmd(session)` is mandatory. Everything else is optional and
 checked with `if adapter.<method> then` before being called, so leaving
@@ -123,7 +123,7 @@ Whether your CLI supports this depends on the CLI:
 | No pre-prompt hooks (most CLIs) | Either (a) skip per-prompt context entirely and rely on the agent calling MCP tools when it needs editor state, or (b) wrap the CLI in a stdin-injecting shim. |
 
 The harness writes context files to `session.active_dir` and refreshes
-`ephemeral.json` automatically on every `BufEnter` of an agent terminal.
+`ephemeral.json` automatically whenever the user enters or leaves a file buffer.
 You don't have to read these files yourself — the hook script (or the
 agent via MCP tools) does.
 
@@ -147,7 +147,7 @@ definition and never needs to know about either source.
 
 | File | Volatility | Description |
 |---|---|---|
-| `ephemeral.json` | High | Refreshed on every `BufEnter`: cursor, open buffers, recent diagnostics, git status. |
+| `ephemeral.json` | High | Refreshed as the user moves between file buffers: last file and cursor, open buffers, recent diagnostics, quickfix. |
 | `tmux_captures.json` | Low | Tmux pane snapshots, manually captured. |
 
 ### Files in `$NVIM_AGENT_RUNTIME_DIR` (`<cwd>/.nvim-agent/instances/<instance-id>/`, shared only with peers in the same Neovim instance)

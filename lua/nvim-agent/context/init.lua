@@ -24,6 +24,17 @@ local function read_file(path)
 	return content
 end
 
+--- Write the ephemeral editor-state snapshot (shared by every session in
+--- this Neovim instance). Cheap: a few API reads and one small file.
+--- @param process_dir string
+--- @return boolean
+function M.write_ephemeral(process_dir)
+	if not process_dir then
+		return false
+	end
+	return write_file(process_dir .. "/" .. config.get().context_files.ephemeral, vim.json.encode(ephemeral.gather()))
+end
+
 --- Write all context files for a session.
 --- Ephemeral is written to process_dir (shared by every session in this
 --- Neovim instance). Agent files in active_dir are only seeded if missing —
@@ -36,18 +47,7 @@ function M.write_all(active_dir, process_dir)
 	end
 	local cfg = config.get()
 
-	local eph_target = process_dir or active_dir
-	local eph_path = eph_target .. "/" .. cfg.context_files.ephemeral
-	local eph = ephemeral.gather()
-	write_file(eph_path, vim.json.encode(eph))
-	-- Git state is probed in the background; rewrite the snapshot when it
-	-- lands so the next prompt sees fresh branch/status without this call
-	-- ever having blocked on a shell command.
-	ephemeral.refresh_git(eph.cwd, function(changed)
-		if changed then
-			write_file(eph_path, vim.json.encode(ephemeral.gather()))
-		end
-	end)
+	M.write_ephemeral(process_dir or active_dir)
 
 	local fallbacks = {
 		{ cfg.context_files.persistent_dirs, "[]" },

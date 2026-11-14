@@ -116,6 +116,33 @@ local bname = vim.api.nvim_buf_get_name(sess.bufnr)
 check("terminal buffer named like a native terminal with the session name as title", bname:match("^term://.*//%d+:helper$") ~= nil, bname)
 check("buffer-local vars expose session + agent", vim.b[sess.bufnr].nvim_agent_session == "helper" and vim.b[sess.bufnr].nvim_agent_agent == "helper")
 check("terminal scrollback raised to Neovim's maximum", vim.bo[sess.bufnr].scrollback == 100000, vim.bo[sess.bufnr].scrollback)
+
+-- Ephemeral snapshot is driven by FILE buffers: leaving a file for the agent
+-- records the file + cursor; entering the agent terminal writes nothing.
+do
+	local eph_path = S.process_dir() .. "/ephemeral.json"
+	local file = cwd .. "/main.lua"
+	vim.fn.writefile({ "local a = 1", "local b = 2", "return a + b" }, file)
+	vim.cmd("edit " .. vim.fn.fnameescape(file))
+	vim.api.nvim_win_set_cursor(0, { 2, 6 })
+	vim.api.nvim_set_current_buf(sess.bufnr) -- BufLeave(file) → snapshot
+	vim.wait(500, function() return false end, 50)
+	local snap = vim.json.decode(read(eph_path) or "{}")
+	check("leaving a file buffer for the agent writes the snapshot with that file + cursor",
+		snap.cursor and snap.cursor.file == file and snap.cursor.line == 2 and snap.cursor.col == 6, vim.inspect(snap.cursor))
+	check("snapshot carries no git section", snap.git == nil)
+	check("agent terminals are not listed as open buffers", not vim.tbl_contains(vim.tbl_map(function(b) return b.path end, snap.open_buffers or {}), vim.api.nvim_buf_get_name(sess.bufnr)))
+	-- Now mark the file and re-enter the agent buffer: no rewrite.
+	local f = io.open(eph_path, "w"); f:write('{"sentinel":true}'); f:close()
+	vim.api.nvim_exec_autocmds("BufEnter", { buffer = sess.bufnr })
+	vim.wait(500, function() return false end, 50)
+	check("entering an agent terminal does not rewrite the snapshot", (read(eph_path) or ""):find("sentinel", 1, true) ~= nil, read(eph_path))
+	vim.cmd("edit " .. vim.fn.fnameescape(file)) -- BufEnter(file) → snapshot again
+	vim.wait(500, function() return false end, 50)
+	check("entering a file buffer rewrites the snapshot", (read(eph_path) or ""):find("sentinel", 1, true) == nil)
+	vim.api.nvim_set_current_buf(sess.bufnr)
+	vim.wait(300, function() return false end, 50)
+end
 check("conversation titled '<name> <date> <time>'", (sess.conversation_title or ""):match("^helper %d%d%d%d%-%d%d%-%d%d %d%d:%d%d$") ~= nil, sess.conversation_title)
 check("adapter rename hook called at launch with the title already on the session", #renamed == 1 and renamed[1].title == sess.conversation_title and renamed[1].pre == sess.conversation_title)
 check("first launch: nothing to resume, so the resume hook is not consulted", #resumes == 0 and not sess.resume_conversation)
