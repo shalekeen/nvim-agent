@@ -340,9 +340,13 @@ function M.execute_command(cmd)
 		[[
     local tmp = '%s'
     local f = io.open(tmp, 'r'); local cmd = f:read('*a'); f:close(); os.remove(tmp)
-    local ok, result = pcall(vim.fn.execute, cmd)
-    if not ok then return vim.json.encode({error = tostring(result)}) end
-    return vim.json.encode({output = result or ''})
+    -- The user's window/buffer/cursor/mode are restored afterwards: an agent
+    -- must never move what the user is looking at (see mcp/view_guard.lua).
+    local ok, result, restored = require('nvim-agent.mcp.view_guard').run(function()
+      return vim.fn.execute(cmd)
+    end)
+    if not ok then return vim.json.encode({error = tostring(result), restored = restored}) end
+    return vim.json.encode({output = result or '', restored = restored})
   ]],
 		tmp
 	)
@@ -359,31 +363,59 @@ function M.execute_command(cmd)
 	if data.error then
 		return nil, data.error
 	end
-	return data.output
+	return data.output, nil, data.restored
 end
 
---- Move the cursor in the current window. row is 1-indexed, col is 0-indexed.
-function M.set_cursor(row, col)
+--- Move the cursor in a FILE window: the one showing `filepath` when given,
+--- else the file the user was last editing. Never the user's agent terminal.
+--- row is 1-indexed, col is 0-indexed. Returns { file, row, col } or nil, err.
+function M.set_cursor(row, col, filepath)
+	local fp_tmp, werr = write_tmp(filepath or "")
+	if not fp_tmp then
+		return nil, werr
+	end
 	local lua_code = string.format(
 		[[
-    vim.api.nvim_win_set_cursor(0, {%d, %d})
-    return vim.json.encode({success = true})
+    local tmp = '%s'
+    local f = io.open(tmp, 'r'); local fp = f:read('*a'); f:close(); os.remove(tmp)
+    local guard = require('nvim-agent.mcp.view_guard')
+    local win, err = guard.file_window(fp ~= '' and fp or nil)
+    if not win then return vim.json.encode({error = err}) end
+    local buf = vim.api.nvim_win_get_buf(win)
+    local row = math.max(1, math.min(%d, vim.api.nvim_buf_line_count(buf)))
+    local ok, cerr = pcall(vim.api.nvim_win_set_cursor, win, {row, %d})
+    if not ok then return vim.json.encode({error = tostring(cerr)}) end
+    return vim.json.encode({file = vim.api.nvim_buf_get_name(buf), row = row, col = %d})
   ]],
+		fp_tmp,
 		row,
+		col,
 		col
 	)
 	local result, err = nvim_lua_eval(lua_code)
+	os.remove(fp_tmp)
 	if not result then
 		return nil, err
 	end
-	return true
+	local data, derr = decode_response(result)
+	if derr then
+		return nil, derr
+	end
+	if data.error then
+		return nil, data.error
+	end
+	return data
 end
 
---- Get the cursor position in the current window.
+--- The cursor in the file the user is (or was last) editing: the current
+--- window when it shows a file, else the last file window. Returns
+--- { file, row, col } or nil, err when the user has no file window.
 function M.get_cursor()
 	local lua_code = [[
-    local c = vim.api.nvim_win_get_cursor(0)
-    return vim.json.encode({row = c[1], col = c[2]})
+    local win, err = require('nvim-agent.mcp.view_guard').file_window(nil)
+    if not win then return vim.json.encode({error = err}) end
+    local c = vim.api.nvim_win_get_cursor(win)
+    return vim.json.encode({file = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(win)), row = c[1], col = c[2]})
   ]]
 	local result, err = nvim_lua_eval(lua_code)
 	if not result then
@@ -392,6 +424,9 @@ function M.get_cursor()
 	local data, derr = decode_response(result)
 	if derr then
 		return nil, derr
+	end
+	if data.error then
+		return nil, data.error
 	end
 	return data
 end

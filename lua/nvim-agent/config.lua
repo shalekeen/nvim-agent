@@ -130,6 +130,8 @@ Examples:
 ### 4. execute_command -- run a Neovim ex command (returns output)
   execute_command(command="w")
   execute_command(command="set number")
+The user's window, buffer, cursor and mode are restored after every command. Never use it
+to navigate (edit, buffer, split, tabnew, copen): the change is undone and reported.
 
 ### 5. list_buffers -- list open file buffers
 Returns buffer numbers, paths, modified status, and filetypes.
@@ -156,9 +158,18 @@ For new files: edit_buffer(filepath="...", content="...", replace_entire_file=tr
 
 - get_buffer_content(bufnr): read in-memory buffer state (may include unsaved changes)
 - set_buffer_content(bufnr, lines): write to buffer without saving; lines is an array of strings
-- open_buffer(filepath): open a file in the editor window (switches user's view)
+- open_buffer(filepath): load a file into the buffer list (does NOT change the user's view)
 - close_buffer(bufnr, force): close a buffer; force=true discards unsaved changes
-- set_cursor(row, col) / get_cursor(): cursor control
+- set_cursor(row, col, filepath?) / get_cursor(): the cursor in a FILE window (the given
+  file's window, else the file the user was last editing). Never the user's terminal.
+
+## The user's focus is theirs
+
+The user may be typing into another agent's terminal while you work. Nothing you do may
+change which window or buffer they are looking at: edit files with edit_buffer (silent by
+default; review=true only leaves the buffer loaded so they can open it), never run
+navigation commands, and never try to "show" the user a file. If they should look at
+something, say so with the path and line in your reply.
 
 ---
 

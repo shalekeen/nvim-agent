@@ -13,6 +13,7 @@ A Neovim plugin that hosts one or more terminal-based coding agents (Claude Code
 - Bundled **MCP server** so agents can read/write buffers, search files, and coordinate with peers directly through your editor
 - Auto-injected context (open buffers, last cursor position, diagnostics, tmux pane captures) before every prompt, shared by every agent in the Neovim instance
 - Multi-agent messaging: agents send messages, broadcast status, delegate work, and can spawn or relaunch each other
+- Agents never steal your focus: edits land in buffers silently, `execute_command` restores your window, buffer, cursor and mode afterwards, and the cursor tools only ever act on file windows, never on the agent terminal you are typing in
 - Pluggable **adapter** interface — ships with a Claude Code adapter; add your own
 
 ## Requirements

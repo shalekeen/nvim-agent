@@ -245,7 +245,7 @@ M.definitions = {
 
 	{
 		name = "execute_command",
-		description = "Execute a Neovim ex command and return its output (e.g. 'w' to save, 'set number', 'grep foo **/*.lua'). Returns the captured command output.",
+		description = "Execute a Neovim ex command and return its output (e.g. 'w' to save, 'set number', 'grep foo **/*.lua'). Returns the captured command output. The user's window, buffer, cursor and mode are restored afterwards, so this cannot be used to show the user a file: do not run navigation commands (edit, buffer, split, tabnew, copen); they are undone.",
 		inputSchema = {
 			type = "object",
 			properties = {
@@ -343,7 +343,7 @@ M.definitions = {
 
 	{
 		name = "set_cursor",
-		description = "Move the cursor to a specific position in the current window",
+		description = "Move the cursor in a FILE window: the window showing `filepath` when given, otherwise the file the user was last editing. Never touches the user's agent terminal or changes which window is focused. Errors when no file window is visible.",
 		inputSchema = {
 			type = "object",
 			properties = {
@@ -355,6 +355,10 @@ M.definitions = {
 					type = "number",
 					description = "Column number (0-indexed)",
 				},
+				filepath = {
+					type = "string",
+					description = "Optional: the file whose window to move the cursor in (must already be shown in a window)",
+				},
 			},
 			required = { "row", "col" },
 		},
@@ -362,7 +366,7 @@ M.definitions = {
 
 	{
 		name = "get_cursor",
-		description = "Get the current cursor position in the active window",
+		description = "Get the cursor position in the file the user is (or was last) editing: returns file, row and col. Errors when the user has no file window open.",
 		inputSchema = {
 			type = "object",
 			properties = vim.empty_dict(),
@@ -791,12 +795,18 @@ function M.execute(tool_name, arguments)
 			return { { type = "text", text = "Error: command is required" } }, true
 		end
 
-		local output, err = nvim_rpc.execute_command(command)
+		local output, err, restored = nvim_rpc.execute_command(command)
 		if err then
 			return { { type = "text", text = "Error: " .. err } }, true
 		end
 
 		local text = output ~= "" and output or "(command executed, no output)"
+		if type(restored) == "table" and #restored > 0 then
+			text = text
+				.. "\n(note: this command moved the user's view; restored "
+				.. table.concat(restored, ", ")
+				.. ". Agents must not navigate the user's editor.)"
+		end
 		return { { type = "text", text = text } }, false
 
 	-- ----------------------------------------------------------------
@@ -889,12 +899,12 @@ function M.execute(tool_name, arguments)
 			return { { type = "text", text = "Error: row and col are required" } }, true
 		end
 
-		local _, err = nvim_rpc.set_cursor(row, col)
+		local pos, err = nvim_rpc.set_cursor(row, col, arguments.filepath)
 		if err then
 			return { { type = "text", text = "Error: " .. err } }, true
 		end
 
-		return { { type = "text", text = string.format("Cursor moved to row %d, col %d", row, col) } }, false
+		return { { type = "text", text = string.format("Cursor moved to row %d, col %d in %s", pos.row, pos.col, pos.file) } }, false
 
 	-- ----------------------------------------------------------------
 	-- get_cursor
