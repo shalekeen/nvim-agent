@@ -200,19 +200,149 @@ function M.launch(manifest, cwd)
 	end
 
 	focus_nvim_tree()
-	local ids = {}
+	-- Workspace `windows` setting: which of the launched members get a
+	-- window. The others still launch, hidden.
+	local ids, names = {}, {}
 	for _, sess in ipairs(created) do
 		table.insert(ids, sess.id)
+		table.insert(names, sess.name)
+	end
+	local show_names = ws.windowed_members(manifest, names)
+	local show_ids = {}
+	for _, sess in ipairs(created) do
+		if vim.tbl_contains(show_names, sess.name) then
+			table.insert(show_ids, sess.id)
+		end
 	end
 	vim.defer_fn(function()
-		if #ids > 1 then
-			terminal().open_grid(ids, 4)
-		else
+		if #ids == 1 and #show_ids == 1 then
 			terminal().open(ids[1])
+		else
+			terminal().open_grid(ids, nil, show_ids)
 		end
 	end, 300)
 
-	notify(string.format("workspace '%s' launched (%d agent%s)", manifest.name, #created, #created == 1 and "" or "s"))
+	local hidden = #created - #show_ids
+	notify(string.format(
+		"workspace '%s' launched (%d agent%s%s)",
+		manifest.name,
+		#created,
+		#created == 1 and "" or "s",
+		hidden > 0 and string.format(", %d hidden — open with :NvimAgent open or <leader>ao", hidden) or ""
+	))
+end
+
+------------------------------------------------------------------------
+-- Windows on launch
+------------------------------------------------------------------------
+
+--- Re-lay the live workspace's running agents out per its `windows`
+--- setting: the chosen members get a grid cell, the rest are hidden.
+--- @param manifest table
+--- @return integer  number of windows shown
+function M.apply_windows(manifest)
+	local only = workspace_mod().windowed_members(manifest)
+	return terminal().arrange_all(nil, only)
+end
+
+--- Set the live workspace's windows-on-launch setting (and apply it to the
+--- running agents right away). `value` is "all", a number or a list of
+--- member names; omitted → interactive picker.
+--- @param value any|nil
+--- @param cwd string|nil
+function M.configure_windows(value, cwd)
+	cwd = cwd or vim.fn.getcwd()
+	local ws = workspace_mod()
+	local manifest = ws.get_current()
+	if not manifest then
+		return notify("no live workspace — load one first", vim.log.levels.WARN)
+	end
+
+	local function commit(v)
+		local ok, err = ws.set_windows(manifest, v, cwd)
+		if not ok then
+			return notify(err, vim.log.levels.ERROR)
+		end
+		local shown = M.apply_windows(manifest)
+		notify(string.format("workspace '%s': %s on launch (%d shown now)", manifest.name, ws.describe_windows(v), shown))
+	end
+
+	if value ~= nil then
+		return commit(value)
+	end
+
+	local ALL, NUMBER, AGENTS = "One window per agent", "A set number of windows…", "Windows for chosen agents…"
+	local current = ws.windows_of(manifest)
+
+	local function pick_agents_menu(chosen)
+		local DONE = "Done"
+		local options, names = {}, {}
+		for _, e in ipairs(manifest.agents or {}) do
+			table.insert(names, e.name)
+			table.insert(options, (chosen[e.name] and "  ✓ " or "    ") .. e.name)
+		end
+		table.insert(options, DONE)
+		ui().select(options, {
+			prompt = string.format("Workspace '%s' — agents that get a window (toggle, then Done)", manifest.name),
+			width = 80,
+		}, function(choice, idx)
+			if not choice then
+				return
+			end
+			if choice == DONE then
+				local list = {}
+				for _, n in ipairs(names) do
+					if chosen[n] then
+						table.insert(list, n)
+					end
+				end
+				if #list == 0 then
+					return commit(0)
+				end
+				return commit(list)
+			end
+			local n = names[idx]
+			if n then
+				chosen[n] = not chosen[n] or nil
+			end
+			pick_agents_menu(chosen)
+		end)
+	end
+
+	ui().select({ ALL, NUMBER, AGENTS }, {
+		prompt = string.format("Workspace '%s' — windows on launch (now: %s)", manifest.name, ws.describe_windows(current)),
+		width = 80,
+	}, function(choice)
+		if not choice then
+			return
+		end
+		if choice == ALL then
+			return commit(ws.WINDOWS_ALL)
+		end
+		if choice == NUMBER then
+			ui().input({
+				prompt = "",
+				title = "Number of agent windows to open on launch (0 = all hidden)",
+				default = type(current) == "number" and tostring(current) or "",
+			}, function(text)
+				if not text or text == "" then
+					return
+				end
+				if not text:match("^%d+$") then
+					return notify("windows must be a whole number ≥ 0", vim.log.levels.ERROR)
+				end
+				commit(tonumber(text))
+			end)
+			return
+		end
+		local chosen = {}
+		if type(current) == "table" then
+			for _, n in ipairs(current) do
+				chosen[n] = true
+			end
+		end
+		pick_agents_menu(chosen)
+	end)
 end
 
 --- Make `manifest` the live workspace. If another workspace is live with

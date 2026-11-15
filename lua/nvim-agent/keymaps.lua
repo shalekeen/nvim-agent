@@ -147,6 +147,7 @@ function M.register()
 		{ "<leader>awr", function() agent.workspace_remove() end, desc = "Remove workspace" },
 		{ "<leader>awR", function() agent.workspace_rename() end, desc = "Rename workspace" },
 		{ "<leader>aws", function() agent.workspace_save_as() end, desc = "Save live workspace as (promote ephemeral)" },
+		{ "<leader>aww", function() agent.workspace_windows() end, desc = "Windows on launch (all / N / chosen agents)" },
 
 		-- ── Agents: membership, liveness, overrides, global library ───────
 		{ "<leader>aa", group = "Agents" },

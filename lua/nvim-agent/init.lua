@@ -98,6 +98,19 @@ end
 function M.workspace_save_as(name)
 	launcher().save_workspace_as(name)
 end
+--- Windows opened on workspace launch: "all" | <n> | "a,b,c" (string as
+--- typed on the command line), or nil for the picker. Applies to the live
+--- workspace immediately.
+function M.workspace_windows(text)
+	if text == nil then
+		return launcher().configure_windows(nil)
+	end
+	local v, err = require("nvim-agent.workspace").parse_windows(text)
+	if not v then
+		return vim.notify("nvim-agent: " .. err, vim.log.levels.ERROR)
+	end
+	launcher().configure_windows(v)
+end
 
 ------------------------------------------------------------------------
 -- Agents: workspace membership

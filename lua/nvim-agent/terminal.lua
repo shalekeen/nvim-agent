@@ -88,6 +88,9 @@ local function scroll_to_bottom(bufnr, winnr, delay_ms)
 		if not winnr or not vim.api.nvim_win_is_valid(winnr) then
 			return
 		end
+		if vim.api.nvim_win_get_buf(winnr) ~= bufnr then
+			return
+		end
 		local line_count = vim.api.nvim_buf_line_count(bufnr)
 		vim.api.nvim_win_set_cursor(winnr, { line_count, 0 })
 	end, delay_ms or 5000)
@@ -365,11 +368,38 @@ function M.open(session_id)
 	vim.cmd("startinsert")
 end
 
---- Open multiple sessions in a Y×N grid in a fresh tab.
+--- Launch sessions whose terminals should NOT be shown. A terminal job
+--- needs a window to be created in, so a temporary bottom split acts as
+--- the staging window: each CLI is spawned there in turn, then the split
+--- is closed and the buffers stay loaded (hidden) for M.open to show later.
+--- @param sessions table[]
+--- @param adapter table
+local function launch_hidden(sessions, adapter)
+	if #sessions == 0 then
+		return
+	end
+	local prev_win = vim.api.nvim_get_current_win()
+	vim.cmd("botright split")
+	local staging = vim.api.nvim_get_current_win()
+	for _, sess in ipairs(sessions) do
+		launch_session_in_window(sess, staging, adapter)
+		sess.winnr = nil
+	end
+	pcall(vim.api.nvim_win_close, staging, true)
+	if vim.api.nvim_win_is_valid(prev_win) then
+		vim.api.nvim_set_current_win(prev_win)
+	end
+	vim.cmd("wincmd =")
+end
+
+--- Launch several sessions at once. Those in `show` (session ids; nil =
+--- all of them) get a cell in a Y×N grid in a fresh tab, ≤ cols per row;
+--- the rest are launched hidden and can be opened later with M.open or
+--- arranged with M.arrange_all. With nothing to show no tab is created.
 --- @param session_ids string[]
---- @param cols number|nil  default 4
-function M.open_grid(session_ids, cols)
-	cols = cols or 4
+--- @param cols number|nil  default config.terminal.grid_columns (4)
+--- @param show string[]|nil  session ids to give a window
+function M.open_grid(session_ids, cols, show)
 	local sessions = {}
 	local session_mod = require("nvim-agent.session")
 	for _, id in ipairs(session_ids) do
@@ -388,13 +418,29 @@ function M.open_grid(session_ids, cols)
 		return
 	end
 
-	local wins = build_grid(#sessions, grid_cols(cols))
-	for i, sess in ipairs(sessions) do
-		launch_session_in_window(sess, wins[i], adapter)
+	local shown, hidden = {}, {}
+	if show == nil then
+		shown = sessions
+	else
+		local want = {}
+		for _, id in ipairs(show) do
+			want[id] = true
+		end
+		for _, sess in ipairs(sessions) do
+			table.insert(want[sess.id] and shown or hidden, sess)
+		end
 	end
 
-	if sessions[1] and sessions[1].winnr and vim.api.nvim_win_is_valid(sessions[1].winnr) then
-		vim.api.nvim_set_current_win(sessions[1].winnr)
+	if #shown > 0 then
+		local wins = build_grid(#shown, grid_cols(cols))
+		for i, sess in ipairs(shown) do
+			launch_session_in_window(sess, wins[i], adapter)
+		end
+	end
+	launch_hidden(hidden, adapter)
+
+	if shown[1] and shown[1].winnr and vim.api.nvim_win_is_valid(shown[1].winnr) then
+		vim.api.nvim_set_current_win(shown[1].winnr)
 	end
 end
 
@@ -404,18 +450,33 @@ end
 --- (or the current tab when it holds only agent windows), otherwise opens
 --- a new tab — so pressing it repeatedly re-flows in place. Launches
 --- nothing; exited members are skipped (relaunch them with restart).
+--- With `only` (session names) just those get a cell and every other agent
+--- window is hidden — this is how a workspace's `windows` setting is
+--- applied to a live workspace. An empty `only` hides everything.
 --- @param cols number|nil
+--- @param only string[]|nil
 --- @return integer  number of sessions arranged
-function M.arrange_all(cols)
+function M.arrange_all(cols, only)
 	local session_mod = require("nvim-agent.session")
+	local allowed = nil
+	if only then
+		allowed = {}
+		for _, n in ipairs(only) do
+			allowed[n] = true
+		end
+	end
 	local shown = {}
 	for _, sess in ipairs(session_mod.list()) do
-		if session_mod.is_running(sess) and is_buf_valid(sess) then
+		if session_mod.is_running(sess) and is_buf_valid(sess) and (not allowed or allowed[sess.name]) then
 			table.insert(shown, sess)
 		end
 	end
 	if #shown == 0 then
-		vim.notify("nvim-agent: no running agents to arrange", vim.log.levels.INFO)
+		if only then
+			M.hide_all()
+		else
+			vim.notify("nvim-agent: no running agents to arrange", vim.log.levels.INFO)
+		end
 		return 0
 	end
 

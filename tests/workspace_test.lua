@@ -296,6 +296,58 @@ check("close of other session leaves s1", session.get_by_name("Alice") == s1)
 session.close(s1.id)
 
 -- ---------------------------------------------------------------------------
+-- Windows on launch: validation, persistence, member selection
+-- ---------------------------------------------------------------------------
+
+check("validate: all", workspace.validate_windows("all") == true)
+check("validate: 0 ok", workspace.validate_windows(0) == true)
+check("validate: 3 ok", workspace.validate_windows(3) == true)
+check("validate: negative rejected", workspace.validate_windows(-1) == false)
+check("validate: fraction rejected", workspace.validate_windows(1.5) == false)
+check("validate: list ok", workspace.validate_windows({ "a", "b" }) == true)
+check("validate: empty list rejected", workspace.validate_windows({}) == false)
+check("validate: list with non-string rejected", workspace.validate_windows({ "a", 2 }) == false)
+check("validate: junk rejected", workspace.validate_windows("two") == false)
+assert_eq("normalize: nil → all", workspace.normalize_windows(nil), "all")
+assert_eq("normalize: json float → integer", workspace.normalize_windows(2.0), 2)
+assert_eq("normalize: invalid → all", workspace.normalize_windows("junk"), "all")
+assert_eq("parse: all", workspace.parse_windows("all"), "all")
+assert_eq("parse: number", workspace.parse_windows("2"), 2)
+check("parse: names", vim.deep_equal(workspace.parse_windows("a, b,c"), { "a", "b", "c" }))
+check("parse: empty errors", select(2, workspace.parse_windows("")) ~= nil)
+assert_eq("describe all", workspace.describe_windows("all"), "one window per agent")
+assert_eq("describe 1", workspace.describe_windows(1), "1 window")
+assert_eq("describe list", workspace.describe_windows({ "a", "b" }), "windows for: a, b")
+
+local wm = workspace.new_manifest("winds")
+workspace.save(wm, cwd)
+assert_eq("new manifest defaults to all", workspace.read("winds", cwd).windows, "all")
+for _, n in ipairs({ "Alice", "Bob", "Carol" }) do
+	workspace.add_entry(wm, { agent = "Alice", name = n }, cwd)
+end
+check("set_windows rejects invalid", workspace.set_windows(wm, -2, cwd) == false)
+check("set_windows number persists", workspace.set_windows(wm, 2, cwd) and workspace.read("winds", cwd).windows == 2)
+check("windowed_members number → first N in manifest order", vim.deep_equal(workspace.windowed_members(wm), { "Alice", "Bob" }))
+check("windowed_members number counts within candidates", vim.deep_equal(workspace.windowed_members(wm, { "Carol", "Bob" }), { "Bob", "Carol" }))
+check("set_windows list persists", workspace.set_windows(wm, { "Carol", "ghost" }, cwd) and vim.deep_equal(workspace.read("winds", cwd).windows, { "Carol", "ghost" }))
+check("windowed_members list ignores non-members, keeps manifest order", vim.deep_equal(workspace.windowed_members(wm), { "Carol" }))
+check("windowed_members list restricted by candidates", #workspace.windowed_members(wm, { "Alice" }) == 0)
+check("set_windows all persists", workspace.set_windows(wm, "all", cwd) and workspace.read("winds", cwd).windows == "all")
+check("windowed_members all → every member", #workspace.windowed_members(wm) == 3)
+-- A stale in-memory copy keeps members added elsewhere when it writes windows.
+local stale = workspace.read("winds", cwd)
+workspace.add_entry(wm, { agent = "Alice", name = "Dave" }, cwd)
+workspace.set_windows(stale, 1, cwd)
+check("set_windows refreshes members before writing", #workspace.read("winds", cwd).agents == 4 and workspace.read("winds", cwd).windows == 1)
+-- Hand-edited junk in the file degrades to "all".
+write(workspace.manifest_path("winds", cwd), vim.json.encode({ name = "winds", windows = "lots", agents = {} }))
+assert_eq("junk windows value reads as all", workspace.read("winds", cwd).windows, "all")
+-- Rename carries the setting.
+workspace.set_windows(wm, 2, cwd)
+workspace.rename("winds", "winds2", cwd)
+assert_eq("rename keeps windows setting", workspace.read("winds2", cwd).windows, 2)
+
+-- ---------------------------------------------------------------------------
 -- Cleanup + summary
 -- ---------------------------------------------------------------------------
 

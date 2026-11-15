@@ -177,6 +177,44 @@ check("navigation helpers run without error", true)
 L.add_agent("nope", nil, cwd)
 check("add of unknown agent is refused", W.find_entry(W.get_current(), "nope") == nil)
 
+-- 10. Windows-on-launch picker (live workspace: ephemeral with qa).
+L.add_agent("engineer", nil, cwd)
+check("engineer added for the windows picker", wait_running("engineer") ~= nil)
+script = { "A set number of windows…", "1" }
+L.configure_windows(nil, cwd)
+check("picker: set number persisted", W.read(W.EPHEMERAL, cwd).windows == 1, vim.inspect(W.read(W.EPHEMERAL, cwd).windows))
+check("picker: set number applied (first member shown, second hidden)", S.get_by_name("qa").winnr ~= nil and S.get_by_name("engineer").winnr == nil)
+script = { "Windows for chosen agents…", "^    engineer", "Done" }
+L.configure_windows(nil, cwd)
+check("picker: chosen agents persisted", vim.deep_equal(W.read(W.EPHEMERAL, cwd).windows, { "engineer" }), vim.inspect(W.read(W.EPHEMERAL, cwd).windows))
+check("picker: chosen agents applied", S.get_by_name("engineer").winnr ~= nil and S.get_by_name("qa").winnr == nil)
+-- Toggle shows the current choice ticked; untick it and tick qa.
+script = { "Windows for chosen agents…", "^  ✓ engineer", "^    qa", "Done" }
+L.configure_windows(nil, cwd)
+check("picker: re-toggle persisted", vim.deep_equal(W.read(W.EPHEMERAL, cwd).windows, { "qa" }), vim.inspect(W.read(W.EPHEMERAL, cwd).windows))
+-- Done with nothing ticked → 0 windows.
+script = { "Windows for chosen agents…", "^  ✓ qa", "Done" }
+L.configure_windows(nil, cwd)
+check("picker: none ticked → 0", W.read(W.EPHEMERAL, cwd).windows == 0 and S.get_by_name("qa").winnr == nil and S.get_by_name("engineer").winnr == nil)
+script = { "One window per agent" }
+L.configure_windows(nil, cwd)
+check("picker: all persisted and applied", W.read(W.EPHEMERAL, cwd).windows == "all" and S.get_by_name("qa").winnr ~= nil and S.get_by_name("engineer").winnr ~= nil)
+script = { false }
+L.configure_windows(nil, cwd)
+check("picker: cancel leaves setting", W.read(W.EPHEMERAL, cwd).windows == "all")
+script = { "A set number of windows…", "two" }
+L.configure_windows(nil, cwd)
+check("picker: non-numeric input refused", W.read(W.EPHEMERAL, cwd).windows == "all")
+-- Load of a workspace whose setting is a number honours it at launch.
+local sprint = W.read("sprint-2", cwd)
+W.set_windows(sprint, 1, cwd)
+script = { "^Load 'sprint-2'", "^Yes" }
+L.startup(cwd)
+check("load: sprint-2 live", W.get_current().name == "sprint-2")
+check("load: members launched", wait_running("engineer") and wait_running("tutor"))
+vim.wait(600, function() return false end)
+check("load: windows=1 → first member shown, second hidden", S.get_by_name("engineer").winnr ~= nil and S.get_by_name("tutor").winnr == nil, vim.inspect({ S.get_by_name("engineer").winnr, S.get_by_name("tutor").winnr }))
+
 check("all scripted answers consumed", #script == 0, vim.inspect(script))
 
 for _, s in ipairs(S.list()) do S.close(s.id) end

@@ -29,7 +29,7 @@ local SUBCOMMANDS = {
 }
 
 local OPEN_SUBS = { "all" }
-local WORKSPACE_SUBS = { "new", "load", "list", "remove", "rename", "save-as" }
+local WORKSPACE_SUBS = { "new", "load", "list", "remove", "rename", "save-as", "windows" }
 local AGENT_SUBS = { "add", "remove", "stop", "restart", "fresh", "define", "copy", "edit", "delete", "list", "push", "overrides", "reset" }
 local SESSION_SUBS = { "list", "switch" }
 local EDIT_SUBS = { "prompt", "notes", "dirs", "role", "config" }
@@ -121,6 +121,10 @@ local function complete(_, cmd_line, _)
 	if n == 3 then
 		if sub == "workspace" and (action == "load" or action == "remove" or action == "rename") then
 			return prefix_filter(workspace_names(), cur)
+		elseif sub == "workspace" and action == "windows" then
+			local opts = { "all" }
+			vim.list_extend(opts, member_names())
+			return prefix_filter(opts, cur)
 		elseif sub == "agent" then
 			if action == "add" or action == "copy" or action == "edit" or action == "delete" then
 				return prefix_filter(library_agent_names(), cur)
@@ -196,8 +200,10 @@ local function dispatch(opts)
 			agent.workspace_rename(args[3], args[4])
 		elseif action == "save-as" then
 			agent.workspace_save_as(args[3])
+		elseif action == "windows" then
+			agent.workspace_windows(args[3] and table.concat(args, " ", 3) or nil)
 		else
-			usage("workspace what? (new|load [name]|list|remove [name]|rename [old] [new]|save-as [name])")
+			usage("workspace what? (new|load [name]|list|remove [name]|rename [old] [new]|save-as [name]|windows [all|N|a,b,c])")
 		end
 	elseif sub == "agent" then
 		if not action or action == "list" then

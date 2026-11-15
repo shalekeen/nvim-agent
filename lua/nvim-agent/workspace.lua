@@ -1,7 +1,7 @@
 -- Workspaces: which agents run together in a project.
 --
 --   <cwd>/.nvim-agent/                       gitignored, project-local
---     workspaces/<name>/workspace.json       manifest: { name, agents = [{ name, agent }] }
+--     workspaces/<name>/workspace.json       manifest: { name, windows, agents = [{ name, agent }] }
 --     workspaces/ephemeral/workspace.json    the auto-created scratch workspace
 --     instances/<instance_id>/               THIS Neovim's peer state
 --       status/  messages/  history/  triggers/
@@ -16,6 +16,11 @@
 -- relaunched. Only add_entry / remove_entry change membership, and both
 -- write the manifest immediately; there is no separate "save" step.
 --
+-- `windows` says how many agent windows a launch opens (M.windows_of):
+-- "all" (default, one per member), a number (the first N members in
+-- manifest order), or a list of member names. Every member's CLI is
+-- launched regardless; the rest run hidden until opened.
+--
 -- One workspace is live per Neovim instance (M.current). Manifests
 -- themselves are project-level and may be loaded by several instances.
 
@@ -23,6 +28,7 @@ local M = {}
 
 M.EPHEMERAL = "ephemeral"
 M.MANIFEST_FILE = "workspace.json"
+M.WINDOWS_ALL = "all"
 
 ------------------------------------------------------------------------
 -- Helpers
@@ -165,7 +171,7 @@ end
 --- @param name string
 --- @return table  { name = name, agents = {} }
 function M.new_manifest(name)
-	return { name = name, agents = {} }
+	return { name = name, agents = {}, windows = M.WINDOWS_ALL }
 end
 
 --- Read a manifest, or nil if it does not exist / is unreadable.
@@ -182,6 +188,7 @@ function M.read(name, cwd)
 	end
 	m.name = name
 	m.agents = m.agents or {}
+	m.windows = M.normalize_windows(m.windows)
 	return m
 end
 
@@ -202,6 +209,7 @@ end
 function M.save(manifest, cwd)
 	return write_json(M.manifest_path(manifest.name, cwd), {
 		name = manifest.name,
+		windows = M.normalize_windows(manifest.windows),
 		agents = manifest.agents or {},
 	})
 end
@@ -314,6 +322,161 @@ local function refresh_members(manifest, cwd)
 	if fresh then
 		manifest.agents = fresh.agents
 	end
+end
+
+------------------------------------------------------------------------
+-- Windows on launch
+------------------------------------------------------------------------
+
+--- Validate a `windows` setting: "all", an integer ≥ 0, or a non-empty list
+--- of member (session) names.
+--- @param v any
+--- @return boolean ok, string|nil err
+function M.validate_windows(v)
+	if v == M.WINDOWS_ALL then
+		return true
+	end
+	if type(v) == "number" then
+		if v ~= math.floor(v) or v < 0 then
+			return false, "windows must be a whole number ≥ 0"
+		end
+		return true
+	end
+	if type(v) == "table" then
+		if #v == 0 then
+			return false, "windows: list at least one agent (or use a number / \"all\")"
+		end
+		for _, n in ipairs(v) do
+			if type(n) ~= "string" or n == "" then
+				return false, "windows: agent names must be non-empty strings"
+			end
+		end
+		return true
+	end
+	return false, 'windows must be "all", a number, or a list of agent names'
+end
+
+--- Coerce any stored/typed value to a valid setting; invalid → "all".
+--- Numbers arrive as floats from JSON and are floored; a list is copied.
+--- @param v any
+--- @return string|integer|string[]
+function M.normalize_windows(v)
+	if type(v) == "number" and v >= 0 and v == math.floor(v) then
+		return math.floor(v)
+	end
+	if type(v) == "table" and M.validate_windows(v) then
+		return vim.list_slice(v)
+	end
+	return M.WINDOWS_ALL
+end
+
+--- Parse a setting typed on the command line: "all", "3", or "a,b,c".
+--- @param text string|nil
+--- @return string|integer|string[]|nil value, string|nil err
+function M.parse_windows(text)
+	text = vim.trim(text or "")
+	if text == "" then
+		return nil, "windows: give \"all\", a number, or comma-separated agent names"
+	end
+	if text == M.WINDOWS_ALL then
+		return M.WINDOWS_ALL
+	end
+	if text:match("^%d+$") then
+		return tonumber(text)
+	end
+	local names = {}
+	for part in text:gmatch("[^,]+") do
+		part = vim.trim(part)
+		if part ~= "" then
+			table.insert(names, part)
+		end
+	end
+	local ok, err = M.validate_windows(names)
+	if not ok then
+		return nil, err
+	end
+	return names
+end
+
+--- The manifest's effective setting (nil → "all").
+--- @param manifest table|nil
+--- @return string|integer|string[]
+function M.windows_of(manifest)
+	return M.normalize_windows(manifest and manifest.windows)
+end
+
+--- Human-readable form of a setting, for pickers and listings.
+--- @param v any
+--- @return string
+function M.describe_windows(v)
+	v = M.normalize_windows(v)
+	if v == M.WINDOWS_ALL then
+		return "one window per agent"
+	end
+	if type(v) == "number" then
+		return string.format("%d window%s", v, v == 1 and "" or "s")
+	end
+	return "windows for: " .. table.concat(v, ", ")
+end
+
+--- Record the windows-on-launch setting and persist.
+--- @param manifest table
+--- @param v any  "all" | integer | string[]
+--- @param cwd string|nil
+--- @return boolean ok, string|nil err
+function M.set_windows(manifest, v, cwd)
+	local ok, err = M.validate_windows(v)
+	if not ok then
+		return false, err
+	end
+	refresh_members(manifest, cwd)
+	manifest.windows = M.normalize_windows(v)
+	M.save(manifest, cwd)
+	return true
+end
+
+--- Which members get a window when the workspace launches, in manifest
+--- order. `candidates` (session names) restricts the pool, e.g. to the
+--- members being launched right now; a number counts within that pool.
+--- Names in a list form that are not members are ignored.
+--- @param manifest table
+--- @param candidates string[]|nil
+--- @return string[] session names
+function M.windowed_members(manifest, candidates)
+	local pool = {}
+	if candidates then
+		local allowed = {}
+		for _, n in ipairs(candidates) do
+			allowed[n] = true
+		end
+		for _, e in ipairs(manifest.agents or {}) do
+			if allowed[e.name] then
+				table.insert(pool, e.name)
+			end
+		end
+	else
+		for _, e in ipairs(manifest.agents or {}) do
+			table.insert(pool, e.name)
+		end
+	end
+	local v = M.windows_of(manifest)
+	if v == M.WINDOWS_ALL then
+		return pool
+	end
+	if type(v) == "number" then
+		return vim.list_slice(pool, 1, math.min(v, #pool))
+	end
+	local wanted = {}
+	for _, n in ipairs(v) do
+		wanted[n] = true
+	end
+	local out = {}
+	for _, n in ipairs(pool) do
+		if wanted[n] then
+			table.insert(out, n)
+		end
+	end
+	return out
 end
 
 --- Add a member and persist. `entry.name` is the session name (defaults to

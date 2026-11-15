@@ -520,6 +520,99 @@ check("nothing was defined for it", not A.exists("nobody"))
 check("nothing was added for it", W.find_entry(W.get_current(), "nobody") == nil)
 
 -- ---------------------------------------------------------------------------
+-- 7. Workspace `windows`: a launch gives only the chosen members a window,
+--    the rest still launch (hidden); configure_windows re-lays out live.
+-- ---------------------------------------------------------------------------
+
+for _, s in ipairs(S.list()) do
+	S.close(s.id)
+end
+T.hide_all()
+for _, n in ipairs({ "w-a", "w-b", "w-c" }) do
+	A.create(n, { role = "windowed " .. n })
+end
+local wm = W.new_manifest("winds")
+W.save(wm, cwd)
+for _, n in ipairs({ "w-a", "w-b", "w-c" }) do
+	W.add_entry(wm, { agent = n, name = n }, cwd)
+end
+W.set_windows(wm, 2, cwd)
+local function wait_all_running(names)
+	return vim.wait(3000, function()
+		for _, n in ipairs(names) do
+			local s = S.get_by_name(n)
+			if not (s and s.jobid) then
+				return false
+			end
+		end
+		return true
+	end)
+end
+local function win_count(tab)
+	return tab and vim.api.nvim_tabpage_is_valid(tab) and #vim.api.nvim_tabpage_list_wins(tab) or 0
+end
+local tabs0 = #vim.api.nvim_list_tabpages()
+L.launch(wm, cwd)
+check("windows=2: every member launched", wait_all_running({ "w-a", "w-b", "w-c" }))
+vim.wait(500, function() return false end)
+check("windows=2: first two members have windows", S.get_by_name("w-a").winnr ~= nil and S.get_by_name("w-b").winnr ~= nil)
+check("windows=2: third member runs hidden", S.get_by_name("w-c").winnr == nil and S.is_running(S.get_by_name("w-c")))
+check("windows=2: agents tab holds exactly 2 windows (staging split closed)", win_count(T.grid_tab) == 2, win_count(T.grid_tab))
+check("windows=2: one new tab", #vim.api.nvim_list_tabpages() == tabs0 + 1)
+check("hidden member's buffer is loaded and a terminal", vim.api.nvim_buf_is_loaded(S.get_by_name("w-c").bufnr) and vim.bo[S.get_by_name("w-c").bufnr].buftype == "terminal")
+
+-- Runtime change: chosen agents → only they are shown, others hidden.
+L.configure_windows({ "w-c" }, cwd)
+check("configure list persisted", vim.deep_equal(W.read("winds", cwd).windows, { "w-c" }))
+check("configure list: w-c shown", S.get_by_name("w-c").winnr ~= nil)
+check("configure list: w-a / w-b hidden", S.get_by_name("w-a").winnr == nil and S.get_by_name("w-b").winnr == nil)
+check("configure list: one grid window", win_count(T.grid_tab) == 1, win_count(T.grid_tab))
+check("configure list: nothing stopped", S.is_running(S.get_by_name("w-a")) and S.is_running(S.get_by_name("w-b")))
+
+-- 0 → everything hidden; "all" → everything shown again, ≤ 4 per row.
+L.configure_windows(0, cwd)
+check("configure 0: all hidden", S.get_by_name("w-a").winnr == nil and S.get_by_name("w-b").winnr == nil and S.get_by_name("w-c").winnr == nil)
+L.configure_windows("all", cwd)
+check("configure all: three windows", win_count(T.grid_tab) == 3, win_count(T.grid_tab))
+
+-- Invalid value is refused and leaves the setting alone.
+L.configure_windows(-3, cwd)
+check("invalid value leaves setting", W.read("winds", cwd).windows == "all")
+
+-- Relaunch of the whole workspace with windows=0: nothing shown, no new tab,
+-- everything running.
+for _, s in ipairs(S.list()) do
+	S.close(s.id)
+end
+T.hide_all()
+W.set_windows(wm, 0, cwd)
+local tabs1 = #vim.api.nvim_list_tabpages()
+L.launch(wm, cwd)
+check("windows=0: every member launched", wait_all_running({ "w-a", "w-b", "w-c" }))
+vim.wait(500, function() return false end)
+check("windows=0: no member has a window", S.get_by_name("w-a").winnr == nil and S.get_by_name("w-b").winnr == nil and S.get_by_name("w-c").winnr == nil)
+check("windows=0: no agents tab created", #vim.api.nvim_list_tabpages() == tabs1)
+check("windows=0: a hidden agent can be opened afterwards", (function()
+	T.open(S.get_by_name("w-b").id)
+	return S.get_by_name("w-b").winnr ~= nil and vim.api.nvim_win_get_buf(S.get_by_name("w-b").winnr) == S.get_by_name("w-b").bufnr
+end)())
+
+-- A single member that is not windowed launches hidden too (no split).
+for _, s in ipairs(S.list()) do
+	S.close(s.id)
+end
+T.hide_all()
+local one = W.new_manifest("one")
+W.save(one, cwd)
+W.add_entry(one, { agent = "w-a", name = "w-a" }, cwd)
+W.set_windows(one, { "nobody" }, cwd)
+local wins1 = #vim.api.nvim_tabpage_list_wins(0)
+L.launch(one, cwd)
+check("single hidden member launched", wait_all_running({ "w-a" }))
+vim.wait(500, function() return false end)
+check("single hidden member: no window", S.get_by_name("w-a").winnr == nil and #vim.api.nvim_tabpage_list_wins(0) == wins1)
+
+-- ---------------------------------------------------------------------------
 -- Cleanup + summary
 -- ---------------------------------------------------------------------------
 

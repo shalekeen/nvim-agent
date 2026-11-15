@@ -133,6 +133,7 @@ Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/a
 ```json
 {
   "name": "feature-dev",
+  "windows": 2,
   "agents": [
     { "name": "Senior SWE", "agent": "Senior SWE", "conversation": "Senior SWE 2026-11-14 09:12" },
     { "name": "Senior SWE-2", "agent": "Senior SWE", "conversation": "Senior SWE-2 2026-11-14 09:12" },
@@ -144,6 +145,16 @@ Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/a
 Each member also records the title of its CLI **conversation**, `"<name> <YYYY-MM-DD HH:MM>"` from the launch that created it. Every later launch of that member, in a new Neovim or after a restart, resumes that conversation through the adapter instead of starting a new CLI session, so the agent keeps its context. When nothing is recorded, or the CLI no longer has the conversation, a new one is started and its title recorded; the notification says which happened. `:NvimAgent agent fresh [name]` (`<leader>aaf`) forgets the recorded title and relaunches into a new conversation. An agent whose `config.json` sets `"conversation": "fresh"` always starts new. Resuming is a per-adapter capability: the Claude Code adapter checks its session store for the title and launches with `--resume`; an adapter without the hook starts new every time.
 
 Each entry pairs a **session name** (unique within the workspace, what peers address) with the **global agent** it is built from, so the same agent can run twice. Manifests are written automatically whenever an agent is added or removed; there is no save step. The `.nvim-agent/` directory is runtime state and should be gitignored.
+
+**Windows on launch.** `windows` says how many agent terminals a launch opens; every member's CLI starts either way, the rest just run hidden until you open them (`<leader>ao`, `:NvimAgent open`, or `:NvimAgent arrange` to show them all). It takes one of three forms:
+
+| `windows` | Meaning |
+| --- | --- |
+| `"all"` (default) | One window per member. |
+| `2` | A set number: the first N members in manifest order get a window (`0` launches everything hidden). |
+| `["Senior SWE", "QA"]` | Exactly these members get a window; names that are not members are ignored. |
+
+The grid itself is unchanged: the shown windows are laid out at most `terminal.grid_columns` (4) per row, rows added as needed. Change the setting at runtime with `<leader>aww` or `:NvimAgent workspace windows [all|N|a,b,c]`; the picker offers the three forms (the agents form is a toggle list) and the new layout is applied to the live workspace immediately, showing the chosen agents and hiding the others without stopping anything.
 
 The **ephemeral workspace** is the one named `ephemeral`. It is created automatically the first time you launch nvim-agent in a directory, saved like any other, and offered as "Resume" on later launches. Promote it to a named workspace with `:NvimAgent workspace save-as`.
 
@@ -171,6 +182,7 @@ Loading a workspace while another is live asks before stopping the running agent
 :NvimAgent                       " toggle current terminal, or open the startup picker
 :NvimAgent open | close | toggle
 :NvimAgent arrange               " arrange every running agent in a uniform grid, ≤4 per row (re-flows in place on repeat)
+:NvimAgent workspace windows [all|N|a,b,c]   " how many agent windows a launch opens (no arg: picker); applied to the live workspace at once
 :NvimAgent open all              " same as arrange
 :NvimAgent close all             " hide every agent window (processes keep running)
 :NvimAgent status                " team overview: state, role, task, mail, overrides per member
@@ -219,6 +231,7 @@ A `<leader>a` group is registered via which-key. The most used bindings:
 | `<leader>a1` … `<leader>a9` | Jump to the nth agent (relaunches it if exited) |
 | `<leader>al` / `<leader>aL` | Switch agent (picker) / list sessions |
 | `<leader>a=` (or `<leader>aG`) / `<leader>aH` | Arrange every running agent in a uniform grid of at most 4 per row, re-flowing in place on repeat / hide all agent windows |
+| `<leader>aww` | Windows on launch for the live workspace: one per agent, a set number, or chosen agents (picker; applied immediately) |
 | `<leader>ap` | Team status: state, role, current task, pending mail, overrides |
 | `<leader>am` | Type a message into an agent's terminal |
 | `<leader>ao` / `<leader>aT` | Open / toggle the current agent terminal |
@@ -318,7 +331,7 @@ Each workspace keeps its agents' work history as an **Obsidian vault** at `<cwd>
 
 ```
 <cwd>/.nvim-agent/
-├── workspaces/<name>/workspace.json   # { "name", "agents": [{ "name", "agent", "conversation" }] }, saved on every change
+├── workspaces/<name>/workspace.json   # { "name", "windows", "agents": [{ "name", "agent", "conversation" }] }, saved on every change
 ├── workspaces/<name>/<session>/       # that member's override files for this workspace only
 │   ├── user_notes.md                  #   any of the agent's files may appear here;
 │   └── persistent_dirs.json           #   present = used instead of the global one
