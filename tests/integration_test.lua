@@ -187,6 +187,20 @@ do
 	check("claude_code get_cmd passes the title as --name", i >= 0 and argv[i + 2] == "qa 2026-11-09 10:00", table.concat(argv, " "):sub(1, 80))
 	check("claude_code get_cmd omits --name without a title", vim.fn.index(cc:get_cmd({ active_dir = tmp_active, dir = fake.dir, name = "qa" }), "--name") == -1)
 	check("claude_code get_cmd omits --resume unless resuming", vim.fn.index(argv, "--resume") == -1)
+	check("claude_code get_cmd omits --model without a model", vim.fn.index(argv, "--model") == -1)
+
+	-- Model: list_models offers the CLI aliases; set_model records the id and
+	-- get_cmd passes it as --model.
+	local models = cc:list_models()
+	check("claude_code list_models offers opus/sonnet/haiku aliases", #models >= 3 and models[1].id == "opus" and models[2].id == "sonnet" and models[3].id == "haiku" and type(models[1].label) == "string")
+	check("claude_code list_models returns a copy", (function() models[1].id = "x"; return cc:list_models()[1].id == "opus" end)())
+	check("claude_code set_model rejects empty", cc:set_model(fake, "") == false and cc:set_model(fake, nil) == false and fake.model == nil)
+	check("claude_code set_model records a trimmed id", cc:set_model(fake, " sonnet[1m] ") == true and fake.model == "sonnet[1m]")
+	local margv = cc:get_cmd(fake)
+	local mi = vim.fn.index(margv, "--model")
+	check("claude_code get_cmd passes --model <id>", mi >= 0 and margv[mi + 2] == "sonnet[1m]", table.concat(margv, " "):sub(-80))
+	fake.model = nil
+	check("base list_models is empty and set_model false", #base:list_models() == 0 and base:set_model(fake, "opus") == false)
 
 	-- Resume: the title must exist in Claude Code's per-project session store
 	-- (<CLAUDE_CONFIG_DIR>/projects/<encoded cwd>/*.jsonl, custom-title record).

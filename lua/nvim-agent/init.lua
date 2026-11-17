@@ -131,6 +131,14 @@ end
 function M.agent_fresh(name)
 	launcher().fresh_agent(name)
 end
+--- Model for a member of the live workspace. With `model` ("default" clears)
+--- it is set directly; without, a picker offers the adapter's models.
+function M.agent_model(name, model)
+	if model and model ~= "" then
+		return launcher().set_agent_model(name, model)
+	end
+	launcher().pick_agent_model(name)
+end
 
 ------------------------------------------------------------------------
 -- Agents: global library

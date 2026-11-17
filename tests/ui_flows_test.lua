@@ -215,6 +215,40 @@ check("load: members launched", wait_running("engineer") and wait_running("tutor
 vim.wait(600, function() return false end)
 check("load: windows=1 → first member shown, second hidden", S.get_by_name("engineer").winnr ~= nil and S.get_by_name("tutor").winnr == nil, vim.inspect({ S.get_by_name("engineer").winnr, S.get_by_name("tutor").winnr }))
 
+-- 11. Model picker (live: sprint-2 with engineer + tutor). Give the stub
+-- adapter a model list for the picker.
+local active = require("nvim-agent.adapter").get_active()
+active.list_models = function() return { { id = "fast", label = "Fast" }, { id = "smart", label = "Smart" } } end
+active.set_model = function(_, sess, model) sess.model = model; return true end
+local ejob = S.get_by_name("engineer").jobid
+script = { "^engineer", "^  Smart" }
+L.pick_agent_model(nil, cwd)
+check("model picker: recorded in manifest", W.get_model("sprint-2", "engineer", cwd) == "smart", tostring(W.get_model("sprint-2", "engineer", cwd)))
+vim.wait(3000, function() local s = S.get_by_name("engineer"); return s and s.jobid and s.jobid ~= ejob end)
+check("model picker: running agent relaunched with the model", S.get_by_name("engineer").jobid ~= ejob and S.get_by_name("engineer").model == "smart")
+-- Current model is ticked; "Other" takes a typed id.
+script = { "^✓ Smart" }
+L.pick_agent_model("engineer", cwd)
+check("model picker: ticks the current model and re-selecting keeps it", W.get_model("sprint-2", "engineer", cwd) == "smart")
+script = { "^  Other", "claude-opus-5-5" }
+L.pick_agent_model("engineer", cwd)
+check("model picker: free-text id recorded", W.get_model("sprint-2", "engineer", cwd) == "claude-opus-5-5")
+script = { "^✓ claude-opus-5-5" }
+L.pick_agent_model("engineer", cwd)
+check("model picker: custom id is listed and ticked", W.get_model("sprint-2", "engineer", cwd) == "claude-opus-5-5")
+script = { "^  Default" }
+L.pick_agent_model("engineer", cwd)
+check("model picker: default clears", W.get_model("sprint-2", "engineer", cwd) == nil)
+script = { false }
+L.pick_agent_model("tutor", cwd)
+check("model picker: cancel leaves it", W.get_model("sprint-2", "tutor", cwd) == nil)
+-- Exited agent via picker: set but not launched.
+L.stop_agent("tutor", cwd)
+vim.wait(3000, function() return not S.is_running(S.get_by_name("tutor")) end)
+script = { "^  Fast" }
+L.pick_agent_model("tutor", cwd)
+check("model picker on an exited agent records without launching", W.get_model("sprint-2", "tutor", cwd) == "fast" and not S.is_running(S.get_by_name("tutor")))
+
 check("all scripted answers consumed", #script == 0, vim.inspect(script))
 
 for _, s in ipairs(S.list()) do S.close(s.id) end

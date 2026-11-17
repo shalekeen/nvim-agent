@@ -60,10 +60,21 @@ vim.cmd("cd " .. vim.fn.fnameescape(cwd))
 
 local renamed = {}
 local resumes = {}
+local launched = {}
+local set_models = {}
 local stub_can_resume = false
 local stub = {
-	get_cmd = function()
+	get_cmd = function(_, sess)
+		table.insert(launched, { name = sess and sess.name, model = sess and sess.model })
 		return { "sh", "-c", "sleep 30" }
+	end,
+	list_models = function()
+		return { { id = "fast", label = "Fast" }, { id = "smart", label = "Smart" } }
+	end,
+	set_model = function(_, sess, model)
+		table.insert(set_models, { name = sess.name, model = model })
+		sess.model = model
+		return true
 	end,
 	rename_conversation = function(_, sess, title)
 		table.insert(renamed, { name = sess.name, title = title, pre = sess.conversation_title })
@@ -611,6 +622,73 @@ L.launch(one, cwd)
 check("single hidden member launched", wait_all_running({ "w-a" }))
 vim.wait(500, function() return false end)
 check("single hidden member: no window", S.get_by_name("w-a").winnr == nil and #vim.api.nvim_tabpage_list_wins(0) == wins1)
+
+-- ---------------------------------------------------------------------------
+-- 8. Model per member: recorded in the manifest, handed to the adapter at
+--    launch; changing it on a running agent relaunches into the SAME
+--    conversation.
+-- ---------------------------------------------------------------------------
+
+check("no model → adapter.set_model not called, get_cmd sees nil", #set_models == 0 and launched[#launched].model == nil)
+stub_can_resume = true
+local wa = S.get_by_name("w-a")
+local job0, title0 = wa.jobid, wa.conversation_title
+local n_resumes = #resumes
+check("set_agent_model on a running agent succeeds", L.set_agent_model("w-a", "smart", cwd) == true)
+check("model recorded in the manifest", W.get_model("one", "w-a", cwd) == "smart")
+vim.wait(3000, function()
+	local s = S.get_by_name("w-a")
+	return s and s.jobid and s.jobid ~= job0
+end)
+wa = S.get_by_name("w-a")
+check("running agent was relaunched (new job)", wa.jobid and wa.jobid ~= job0, tostring(wa.jobid))
+check("adapter.set_model called with the model before launch", set_models[#set_models] and set_models[#set_models].name == "w-a" and set_models[#set_models].model == "smart")
+check("get_cmd saw session.model", launched[#launched].name == "w-a" and launched[#launched].model == "smart", vim.inspect(launched[#launched]))
+check("relaunch resumed the SAME conversation", #resumes == n_resumes + 1 and resumes[#resumes].title == title0 and wa.conversation_title == title0 and wa.resume_conversation == true, vim.inspect({ resumes[#resumes], wa.conversation_title }))
+check("set_agent_model on an unknown member is refused", L.set_agent_model("ghost", "smart", cwd) == false)
+
+-- Clearing to the default also relaunches, without --model.
+local job1 = wa.jobid
+L.set_agent_model("w-a", "default", cwd)
+vim.wait(3000, function()
+	local s = S.get_by_name("w-a")
+	return s and s.jobid and s.jobid ~= job1
+end)
+check("default clears the manifest model", W.get_model("one", "w-a", cwd) == nil)
+check("relaunched with no model", S.get_by_name("w-a").jobid ~= job1 and launched[#launched].model == nil and S.get_by_name("w-a").model == nil)
+
+-- Exited agent: the model waits for the next launch.
+L.stop_agent("w-a", cwd)
+vim.wait(3000, function() return not S.is_running(S.get_by_name("w-a")) end)
+local n_launch = #launched
+L.set_agent_model("w-a", "fast", cwd)
+check("stopped agent is not launched by set_agent_model", #launched == n_launch and S.get_by_name("w-a").model == "fast")
+L.restart_agent("w-a", cwd)
+vim.wait(3000, function() local s = S.get_by_name("w-a"); return s and s.jobid ~= nil end)
+check("next launch uses the recorded model", launched[#launched].model == "fast" and S.get_by_name("w-a").model == "fast")
+
+-- A fresh session (new Neovim) reads the model from the manifest.
+S.close(S.get_by_name("w-a").id)
+L.launch(one, cwd)
+vim.wait(3000, function() local s = S.get_by_name("w-a"); return s and s.jobid ~= nil end)
+check("workspace launch applies the manifest model", launched[#launched].model == "fast")
+
+-- Adapter without set_model: warn and launch with the default.
+local saved_set = stub.set_model
+stub.set_model = nil
+L.stop_agent("w-a", cwd)
+vim.wait(3000, function() return not S.is_running(S.get_by_name("w-a")) end)
+local warned = false
+local orig_notify = vim.notify
+vim.notify = function(msg, level, ...)
+	if type(msg) == "string" and msg:find("cannot set a model", 1, true) then warned = true end
+	return orig_notify(msg, level, ...)
+end
+L.restart_agent("w-a", cwd)
+vim.wait(3000, function() local s = S.get_by_name("w-a"); return s and s.jobid ~= nil end)
+vim.notify = orig_notify
+stub.set_model = saved_set
+check("adapter without set_model warns and launches with the default", warned and launched[#launched].model == nil and S.get_by_name("w-a").model == nil)
 
 -- ---------------------------------------------------------------------------
 -- Cleanup + summary

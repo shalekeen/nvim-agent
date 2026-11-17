@@ -95,6 +95,30 @@ function M.base:resume_conversation(session, title)
 	return false
 end
 
+--- The models this CLI can be started with, for the model picker. Each
+--- entry is { id = <what set_model receives>, label = <shown to the user> }.
+--- The harness adds its own "default" row (no model: the CLI's own choice)
+--- and a free-text row, so list only real choices. Base: none.
+--- @return table[]  { { id = string, label = string }, ... }
+function M.base:list_models()
+	return {}
+end
+
+--- Start this session's CLI with `model` (an id from list_models, or one
+--- the user typed). The harness calls it right before `get_cmd` at every
+--- launch for which the workspace manifest records a model for the member
+--- (`agents[].model`); the value is also in `session.model`. Turn it into
+--- a launch flag in `get_cmd`. Return true if the CLI will honour it; on
+--- false the harness warns and launches with the CLI's default. Changing
+--- the model of a running agent is done by relaunching it into the same
+--- conversation, so there is no runtime-switch hook. Base: not supported.
+--- @param session table
+--- @param model string
+--- @return boolean
+function M.base:set_model(session, model)
+	return false
+end
+
 function M.base:on_enter(bufnr)
 	-- no-op by default; adapters can override to run code when entering the agent buffer
 end

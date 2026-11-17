@@ -238,6 +238,21 @@ local function launch_session_in_window(sess, win, adapter)
 		)
 	end
 
+	-- Model: per member, per workspace (manifest agents[].model). Handed to
+	-- the adapter before get_cmd so it becomes a launch flag; absent = the
+	-- CLI's own default.
+	sess.model = ws.get_model(ws_name, sess.name, cwd)
+	if sess.model then
+		local applied = type(adapter.set_model) == "function" and adapter:set_model(sess, sess.model)
+		if not applied then
+			vim.notify(
+				"nvim-agent: '" .. sess.name .. "' asks for model '" .. sess.model .. "' but the adapter cannot set a model; launching with the CLI default",
+				vim.log.levels.WARN
+			)
+			sess.model = nil
+		end
+	end
+
 	-- CLI-specific environment from the adapter; the harness's own variables
 	-- below take precedence so an adapter cannot break the context plumbing.
 	local env = {}

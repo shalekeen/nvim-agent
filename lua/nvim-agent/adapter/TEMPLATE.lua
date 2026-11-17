@@ -93,6 +93,13 @@ function M:get_cmd(session)
 	-- 	end
 	-- end
 
+	-- Model for this member in this workspace (set by the harness through
+	-- set_model before launch, see §1e). Pass it if your CLI has a flag.
+	-- if session.model then
+	-- 	table.insert(cmd, "--model")
+	-- 	table.insert(cmd, session.model)
+	-- end
+
 	return cmd
 end
 
@@ -165,6 +172,30 @@ end
 -- 	end
 -- 	session.conversation_title = title
 -- 	session.resume_conversation = true
+-- 	return true
+-- end
+
+------------------------------------------------------------------------
+-- §1e. list_models() / set_model(session, model)   ── OPTIONAL
+--
+-- The workspace manifest may record a model per member (agents[].model).
+-- list_models feeds the picker: { { id = "...", label = "..." }, ... } —
+-- only real choices; the harness adds "default" and a free-text row.
+-- set_model is called before get_cmd at each launch with the recorded
+-- model (also in session.model); return true if get_cmd will pass it to
+-- the CLI, false if the CLI cannot choose a model (the harness then warns
+-- and launches with the default). A running agent whose model changes is
+-- relaunched by the harness into the same conversation — no runtime hook.
+------------------------------------------------------------------------
+-- function M:list_models()
+-- 	return {
+-- 		{ id = "fast", label = "Fast model" },
+-- 		{ id = "smart", label = "Smart model" },
+-- 	}
+-- end
+--
+-- function M:set_model(session, model)
+-- 	session.model = model
 -- 	return true
 -- end
 

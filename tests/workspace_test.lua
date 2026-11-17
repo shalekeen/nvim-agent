@@ -348,6 +348,33 @@ workspace.rename("winds", "winds2", cwd)
 assert_eq("rename keeps windows setting", workspace.read("winds2", cwd).windows, 2)
 
 -- ---------------------------------------------------------------------------
+-- Model per member
+-- ---------------------------------------------------------------------------
+
+-- (the junk-write above emptied winds2's members; use a fresh manifest)
+local mm = workspace.new_manifest("winds2")
+workspace.save(mm, cwd)
+for _, n in ipairs({ "Alice", "Bob", "Carol", "Dave" }) do
+	workspace.add_entry(mm, { agent = "Alice", name = n }, cwd)
+end
+check("get_model nil by default", workspace.get_model("winds2", "Alice", cwd) == nil)
+check("set_model unknown member refused", workspace.set_model(mm, "nobody", "opus", cwd) == false)
+check("set_model non-string refused", workspace.set_model(mm, "Alice", 3, cwd) == false)
+check("set_model persists", workspace.set_model(mm, "Alice", "  opus ", cwd) and workspace.get_model("winds2", "Alice", cwd) == "opus")
+check("set_model leaves other members alone", workspace.get_model("winds2", "Bob", cwd) == nil)
+check("set_model is stored on the manifest entry", workspace.read("winds2", cwd).agents[1].model == "opus")
+check("set_model '' clears", workspace.set_model(mm, "Alice", "", cwd) and workspace.get_model("winds2", "Alice", cwd) == nil)
+check("set_model nil clears and drops the key", workspace.set_model(mm, "Alice", "haiku", cwd) and workspace.set_model(mm, "Alice", nil, cwd) and workspace.read("winds2", cwd).agents[1].model == nil)
+-- A stale copy does not drop members added elsewhere.
+local stale2 = workspace.read("winds2", cwd)
+workspace.add_entry(mm, { agent = "Alice", name = "Erin" }, cwd)
+workspace.set_model(stale2, "Bob", "sonnet", cwd)
+check("set_model refreshes members before writing", #workspace.read("winds2", cwd).agents == 5 and workspace.get_model("winds2", "Bob", cwd) == "sonnet")
+-- Rename carries models.
+workspace.rename("winds2", "winds3", cwd)
+check("rename keeps member models", workspace.get_model("winds3", "Bob", cwd) == "sonnet")
+
+-- ---------------------------------------------------------------------------
 -- Cleanup + summary
 -- ---------------------------------------------------------------------------
 

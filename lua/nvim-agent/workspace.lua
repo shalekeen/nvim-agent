@@ -8,7 +8,10 @@
 --
 -- A manifest entry pairs a SESSION name (unique within the workspace, what
 -- peers address) with the global AGENT it is built from (agent.lua). The
--- same agent may appear twice under different session names.
+-- same agent may appear twice under different session names. An entry may
+-- also carry `conversation` (the CLI conversation title to resume) and
+-- `model` (the CLI model id for this member in this workspace; absent =
+-- the CLI's own default). Both are workspace state, not agent state.
 --
 -- Membership vs liveness: the manifest is membership. Whether a member's
 -- CLI process is currently running is session state (session.lua), not
@@ -322,6 +325,42 @@ local function refresh_members(manifest, cwd)
 	if fresh then
 		manifest.agents = fresh.agents
 	end
+end
+
+--- The model recorded for a member in this workspace, read fresh from
+--- disk, or nil for the CLI's default.
+--- @param name string  workspace
+--- @param session_name string
+--- @param cwd string|nil
+--- @return string|nil
+function M.get_model(name, session_name, cwd)
+	local m = M.read(name, cwd)
+	if not m then
+		return nil
+	end
+	local e = M.find_entry(m, session_name)
+	local v = e and e.model
+	return (type(v) == "string" and v ~= "") and v or nil
+end
+
+--- Record (or, with nil / "", forget) a member's model and persist.
+--- @param manifest table
+--- @param session_name string
+--- @param model string|nil
+--- @param cwd string|nil
+--- @return boolean ok, string|nil err
+function M.set_model(manifest, session_name, model, cwd)
+	if model ~= nil and type(model) ~= "string" then
+		return false, "model must be a string"
+	end
+	refresh_members(manifest, cwd)
+	local e = M.find_entry(manifest, session_name)
+	if not e then
+		return false, "'" .. session_name .. "' is not in workspace '" .. manifest.name .. "'"
+	end
+	e.model = (model ~= nil and vim.trim(model) ~= "") and vim.trim(model) or nil
+	M.save(manifest, cwd)
+	return true
 end
 
 ------------------------------------------------------------------------

@@ -952,6 +952,144 @@ function M.remove_agent(name, cwd)
 	end)
 end
 
+------------------------------------------------------------------------
+-- Model per member
+------------------------------------------------------------------------
+
+M.MODEL_DEFAULT = "default"
+
+--- Set the CLI model for a member of the live workspace. `model` nil, ""
+--- or "default" clears it (the CLI's own default). A running agent is
+--- stopped and relaunched into the SAME recorded conversation with the new
+--- model; an exited one picks it up at its next launch.
+--- @param name string  member (session) name
+--- @param model string|nil
+--- @param cwd string|nil
+--- @return boolean ok
+function M.set_agent_model(name, model, cwd)
+	cwd = cwd or workspace_mod().cwd()
+	local m = require_live_workspace()
+	if not m then
+		return false
+	end
+	local ws = workspace_mod()
+	local sm = session_mod()
+	if type(model) == "string" then
+		model = vim.trim(model)
+	end
+	if model == "" or model == M.MODEL_DEFAULT then
+		model = nil
+	end
+	local ok, err = ws.set_model(m, name, model, cwd)
+	if not ok then
+		notify(err, vim.log.levels.ERROR)
+		return false
+	end
+	local label = model and ("model '" .. model .. "'") or "the CLI's default model"
+	local sess = sm.get_by_name(name)
+	if sess and sm.is_running(sess) then
+		terminal().stop(sess.id)
+		vim.wait(5000, function()
+			return not sm.is_running(sess)
+		end, 50)
+		if sm.is_running(sess) then
+			notify("agent '" .. name .. "' did not stop; " .. label .. " applies at its next launch", vim.log.levels.ERROR)
+			return false
+		end
+		M.restart_agent(name, cwd)
+		notify("'" .. name .. "' relaunched with " .. label .. " in the same conversation")
+	else
+		if sess then
+			sess.model = model
+		end
+		notify("'" .. name .. "' will use " .. label .. " at its next launch")
+	end
+	return true
+end
+
+--- Picker: choose a member (when `name` is nil and several exist), then a
+--- model from the adapter's list, the CLI default, or a typed id.
+--- @param name string|nil
+--- @param cwd string|nil
+function M.pick_agent_model(name, cwd)
+	cwd = cwd or workspace_mod().cwd()
+	local m = require_live_workspace()
+	if not m then
+		return
+	end
+	local ws = workspace_mod()
+	local adapter = require("nvim-agent.adapter").get_active()
+	local DEFAULT, OTHER = "Default (the CLI's own model)", "Other — type a model id…"
+
+	local function pick_model(n)
+		if not ws.find_entry(m, n) then
+			return notify("'" .. n .. "' is not in workspace '" .. m.name .. "'", vim.log.levels.ERROR)
+		end
+		local current = ws.get_model(m.name, n, cwd)
+		local models = (adapter and type(adapter.list_models) == "function") and adapter:list_models() or {}
+		local options, ids = {}, {}
+		table.insert(options, (current == nil and "✓ " or "  ") .. DEFAULT)
+		table.insert(ids, M.MODEL_DEFAULT)
+		local listed = {}
+		for _, entry in ipairs(models) do
+			if type(entry) == "table" and type(entry.id) == "string" then
+				listed[entry.id] = true
+				table.insert(options, (current == entry.id and "✓ " or "  ") .. (entry.label or entry.id) .. "  [" .. entry.id .. "]")
+				table.insert(ids, entry.id)
+			end
+		end
+		if current and not listed[current] then
+			table.insert(options, "✓ " .. current .. "  [custom]")
+			table.insert(ids, current)
+		end
+		table.insert(options, "  " .. OTHER)
+		table.insert(ids, OTHER)
+		ui().select(options, {
+			prompt = string.format("Model for '%s' (now: %s)", n, current or "default"),
+			width = 80,
+		}, function(choice, idx)
+			if not choice then
+				return
+			end
+			local id = ids[idx]
+			if id == OTHER then
+				ui().input({ prompt = "", title = "Model id for '" .. n .. "'", default = current or "" }, function(text)
+					if text and vim.trim(text) ~= "" then
+						M.set_agent_model(n, text, cwd)
+					end
+				end)
+				return
+			end
+			M.set_agent_model(n, id, cwd)
+		end)
+	end
+
+	if name and name ~= "" then
+		return pick_model(name)
+	end
+	local names = vim.tbl_map(function(e)
+		return e.name
+	end, m.agents or {})
+	if #names == 0 then
+		return notify("workspace '" .. m.name .. "' has no agents")
+	end
+	if #names == 1 then
+		return pick_model(names[1])
+	end
+	ui().select(names, {
+		prompt = "Set model for which agent?",
+		width = 70,
+		format_item = function(n)
+			local cur = ws.get_model(m.name, n, cwd)
+			return n .. (cur and ("  (" .. cur .. ")") or "")
+		end,
+	}, function(choice)
+		if choice then
+			pick_model(choice)
+		end
+	end)
+end
+
 --- Relaunch an exited member (or one whose session was never created).
 --- @param name string|nil  session name; nil → picker over non-running members
 --- @param cwd string|nil
@@ -1439,7 +1577,7 @@ function M.team_status(cwd)
 		local mail = vim.fn.getfsize(inst .. "/messages/" .. e.name .. ".md")
 		local overrides = workspace_mod().list_overrides(m.name, e.name, cwd)
 		local marker = (sess and sess.id == sm.current_id) and "*" or " "
-		table.insert(lines, string.format("%s %-16s %-12s agent: %s", marker, e.name, state, e.agent))
+		table.insert(lines, string.format("%s %-16s %-12s agent: %s%s", marker, e.name, state, e.agent, e.model and ("  model: " .. e.model) or ""))
 		local role = (sess and read_file(sess.active_dir .. "/role.md")) or agent_mod().read_role(e.agent) or "(none)"
 		table.insert(lines, "    role:  " .. trunc(role, 100))
 		if task then

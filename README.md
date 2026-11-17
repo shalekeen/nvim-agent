@@ -135,7 +135,7 @@ Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/a
   "name": "feature-dev",
   "windows": 2,
   "agents": [
-    { "name": "Senior SWE", "agent": "Senior SWE", "conversation": "Senior SWE 2026-11-14 09:12" },
+    { "name": "Senior SWE", "agent": "Senior SWE", "conversation": "Senior SWE 2026-11-14 09:12", "model": "opus" },
     { "name": "Senior SWE-2", "agent": "Senior SWE", "conversation": "Senior SWE-2 2026-11-14 09:12" },
     { "name": "QA", "agent": "QA" }
   ]
@@ -145,6 +145,8 @@ Agents created at runtime by the `spawn_agent` MCP tool land in `~/.nvim-agent/a
 Each member also records the title of its CLI **conversation**, `"<name> <YYYY-MM-DD HH:MM>"` from the launch that created it. Every later launch of that member, in a new Neovim or after a restart, resumes that conversation through the adapter instead of starting a new CLI session, so the agent keeps its context. When nothing is recorded, or the CLI no longer has the conversation, a new one is started and its title recorded; the notification says which happened. `:NvimAgent agent fresh [name]` (`<leader>aaf`) forgets the recorded title and relaunches into a new conversation. An agent whose `config.json` sets `"conversation": "fresh"` always starts new. Resuming is a per-adapter capability: the Claude Code adapter checks its session store for the title and launches with `--resume`; an adapter without the hook starts new every time.
 
 Each entry pairs a **session name** (unique within the workspace, what peers address) with the **global agent** it is built from, so the same agent can run twice. Manifests are written automatically whenever an agent is added or removed; there is no save step. The `.nvim-agent/` directory is runtime state and should be gitignored.
+
+**Model per member.** A member may carry a `model`: the id the CLI is started with for that member in this workspace (Claude Code: `--model opus`). It is workspace state, like `windows`, not part of the agent definition, so the same agent can run on different models in different workspaces. A member without `model` uses the CLI's own default. Set it with `<leader>aam` or `:NvimAgent agent model [name] [model|default]`: the picker lists the models the adapter knows (for Claude Code the aliases `opus`, `sonnet`, `haiku`, `opusplan`, `opus[1m]`, `sonnet[1m]`), a "Default" row, and a free-text row for a full model id. Setting the model of a running agent stops its CLI and relaunches it into the same recorded conversation with the new model; an exited agent picks it up at its next launch. Adapters expose this through `list_models()` and `set_model(session, model)`; an adapter without `set_model` launches with the CLI default and warns.
 
 **Windows on launch.** `windows` says how many agent terminals a launch opens; every member's CLI starts either way, the rest just run hidden until you open them (`<leader>ao`, `:NvimAgent open`, or `:NvimAgent arrange` to show them all). It takes one of three forms:
 
@@ -201,6 +203,7 @@ Loading a workspace while another is live asks before stopping the running agent
 :NvimAgent agent stop [name]            " stop its CLI; it stays a member
 :NvimAgent agent restart [name]         " relaunch an exited member (resumes its conversation)
 :NvimAgent agent fresh [name]           " forget the recorded conversation and relaunch into a new one
+:NvimAgent agent model [name] [model]   " CLI model for a member in this workspace ("default" clears; no model: picker); a running agent relaunches into the same conversation
 :NvimAgent agent push [name]            " promote a member's files to the global agent, clear overrides
 :NvimAgent agent overrides              " show which files each member overrides
 :NvimAgent agent reset [name] [file]    " drop one/all overrides and reload from the global agent
@@ -232,6 +235,7 @@ A `<leader>a` group is registered via which-key. The most used bindings:
 | `<leader>al` / `<leader>aL` | Switch agent (picker) / list sessions |
 | `<leader>a=` (or `<leader>aG`) / `<leader>aH` | Arrange every running agent in a uniform grid of at most 4 per row, re-flowing in place on repeat / hide all agent windows |
 | `<leader>aww` | Windows on launch for the live workspace: one per agent, a set number, or chosen agents (picker; applied immediately) |
+| `<leader>aam` | Set a member's CLI model from the adapter's list (relaunches a running agent into the same conversation) |
 | `<leader>ap` | Team status: state, role, current task, pending mail, overrides |
 | `<leader>am` | Type a message into an agent's terminal |
 | `<leader>ao` / `<leader>aT` | Open / toggle the current agent terminal |
@@ -331,7 +335,7 @@ Each workspace keeps its agents' work history as an **Obsidian vault** at `<cwd>
 
 ```
 <cwd>/.nvim-agent/
-├── workspaces/<name>/workspace.json   # { "name", "windows", "agents": [{ "name", "agent", "conversation" }] }, saved on every change
+├── workspaces/<name>/workspace.json   # { "name", "windows", "agents": [{ "name", "agent", "conversation", "model" }] }, saved on every change
 ├── workspaces/<name>/<session>/       # that member's override files for this workspace only
 │   ├── user_notes.md                  #   any of the agent's files may appear here;
 │   └── persistent_dirs.json           #   present = used instead of the global one

@@ -157,6 +157,12 @@ function M:get_cmd(session)
 		end
 	end
 
+	-- Model for this member in this workspace (set_model, from the manifest).
+	if type(session.model) == "string" and session.model ~= "" then
+		table.insert(cmd, "--model")
+		table.insert(cmd, session.model)
+	end
+
 	if vim.fn.filereadable(mcp_config) == 1 then
 		table.insert(cmd, "--mcp-config")
 		table.insert(cmd, mcp_config)
@@ -196,6 +202,37 @@ function M:rename_conversation(session, title)
 		-- Running: /rename takes effect immediately in the live session.
 		vim.fn.chansend(session.jobid, "/rename " .. title .. "\r")
 	end
+	return true
+end
+
+--- Models Claude Code accepts for `--model`. The aliases resolve to the
+--- current model of each tier on the user's plan, so they stay valid across
+--- releases; full ids (e.g. "claude-opus-5-5") can be typed in the picker's
+--- free-text row.
+M.MODELS = {
+	{ id = "opus", label = "Opus — most capable" },
+	{ id = "sonnet", label = "Sonnet — balanced" },
+	{ id = "haiku", label = "Haiku — fastest" },
+	{ id = "opusplan", label = "Opus for planning, Sonnet for execution" },
+	{ id = "opus[1m]", label = "Opus with the 1M-token context window" },
+	{ id = "sonnet[1m]", label = "Sonnet with the 1M-token context window" },
+}
+
+--- @return table[]
+function M:list_models()
+	return vim.deepcopy(M.MODELS)
+end
+
+--- Record the model for this launch; get_cmd passes it as `--model <id>`.
+--- Any non-empty string is accepted (aliases or full model ids).
+--- @param session table
+--- @param model string
+--- @return boolean
+function M:set_model(session, model)
+	if type(model) ~= "string" or vim.trim(model) == "" then
+		return false
+	end
+	session.model = vim.trim(model)
 	return true
 end
 

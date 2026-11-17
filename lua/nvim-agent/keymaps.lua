@@ -156,6 +156,7 @@ function M.register()
 		{ "<leader>aas", function() agent.agent_stop() end, desc = "Stop agent (stays in workspace)" },
 		{ "<leader>aaR", function() agent.agent_restart() end, desc = "Restart exited agent" },
 		{ "<leader>aaf", function() agent.agent_fresh() end, desc = "New conversation (forget recorded, relaunch)" },
+		{ "<leader>aam", function() agent.agent_model() end, desc = "Set agent model (picker; relaunches into the same conversation)" },
 		{ "<leader>aad", agent.agent_define, desc = "Define new agent (global)" },
 		{ "<leader>aac", function() agent.agent_copy() end, desc = "Copy agent (global)" },
 		{ "<leader>aae", function() agent.agent_edit() end, desc = "Edit global agent definition" },
