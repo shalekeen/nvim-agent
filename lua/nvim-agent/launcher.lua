@@ -997,7 +997,15 @@ function M.set_agent_model(name, model, cwd)
 			return false
 		end
 		M.restart_agent(name, cwd)
-		notify("'" .. name .. "' relaunched with " .. label .. " in the same conversation")
+		-- The relaunch goes through the normal launch path, which resumes the
+		-- recorded conversation when the CLI still has it (the CLI only
+		-- stores a conversation once a message has been sent).
+		local relaunched = sm.get_by_name(name)
+		if relaunched and relaunched.resume_conversation then
+			notify("'" .. name .. "' relaunched with " .. label .. ", resuming '" .. tostring(relaunched.conversation_title) .. "'")
+		else
+			notify("'" .. name .. "' relaunched with " .. label .. " in a new conversation (nothing stored to resume yet)")
+		end
 	else
 		if sess then
 			sess.model = model
